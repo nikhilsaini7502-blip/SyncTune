@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@keyframes floatUp {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.6);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(-20px) scale(1.15);
+  }
+  80% {
+    opacity: 0.9;
+    transform: translateY(-160px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-260px) scale(0.85);
+  }
+}
+
+@keyframes pulseGlow {
+  0%, 100% {
+    transform: scale(1) translate(0px, 0px);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1.08) translate(12px, -8px);
+    opacity: 0.55;
+  }
+}
+
+@keyframes pulseGlowSecondary {
+  0%, 100% {
+    transform: scale(1.05) translate(0px, 0px);
+    opacity: 0.25;
+  }
+  50% {
+    transform: scale(0.95) translate(-14px, 10px);
+    opacity: 0.45;
+  }
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

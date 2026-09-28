@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile stored upon signing in with Firebase Auth",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Unique user ID" },
+        "displayName": { "type": "string", "description": "Display name of user" },
+        "email": { "type": "string", "description": "Email address" },
+        "photoURL": { "type": "string", "description": "Avatar photo URL" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last update timestamp" }
+      },
+      "required": ["uid", "displayName", "email"]
+    },
+    "SavedPlaylist": {
+      "title": "SavedPlaylist",
+      "description": "User saved music playlist stored permanently",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Playlist ID" },
+        "userId": { "type": "string", "description": "Owner user UID" },
+        "name": { "type": "string", "description": "Playlist title" },
+        "description": { "type": "string", "description": "Playlist description" },
+        "emoji": { "type": "string", "description": "Playlist icon emoji" },
+        "tracks": { "type": "array", "description": "List of playlist tracks" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last updated timestamp" }
+      },
+      "required": ["id", "userId", "name", "tracks"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "User private profile document"
+    },
+    "/users/{userId}/playlists/{playlistId}": {
+      "schema": { "$ref": "#/entities/SavedPlaylist" },
+      "description": "User's saved playlists stored permanently"
+    }
+  }
+}

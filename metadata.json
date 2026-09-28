@@ -1,0 +1,6 @@
+{
+  "name": "SyncTune - Live Music Jam",
+  "description": "Host a synchronized music party with friends worldwide. Scan a QR code or enter room code to listen together in real-time with YouTube and audio sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
