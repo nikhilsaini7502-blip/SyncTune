@@ -9,6 +9,7 @@
         "displayName": { "type": "string", "description": "Display name of user" },
         "email": { "type": "string", "description": "Email address" },
         "photoURL": { "type": "string", "description": "Avatar photo URL" },
+        "coupleCode": { "type": "string", "description": "Linked couple code" },
         "createdAt": { "type": "string", "description": "Creation timestamp" },
         "updatedAt": { "type": "string", "description": "Last update timestamp" }
       },
@@ -29,6 +30,45 @@
         "updatedAt": { "type": "string", "description": "Last updated timestamp" }
       },
       "required": ["id", "userId", "name", "tracks"]
+    },
+    "CoupleLink": {
+      "title": "CoupleLink",
+      "description": "Permanent relationship pairing between two partners",
+      "type": "object",
+      "properties": {
+        "code": { "type": "string", "description": "Unique couple code" },
+        "user1Id": { "type": "string", "description": "User 1 UID" },
+        "user1Name": { "type": "string", "description": "User 1 display name" },
+        "user2Id": { "type": "string", "description": "User 2 UID" },
+        "user2Name": { "type": "string", "description": "User 2 display name" },
+        "coupleName": { "type": "string", "description": "Couple name or pet name" },
+        "currentRoomCode": { "type": "string", "description": "Active jam room code" },
+        "currentTrack": { "type": "object", "description": "Currently playing track" },
+        "createdAt": { "type": "string", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "description": "Last update timestamp" }
+      },
+      "required": ["code", "user1Id"]
+    },
+    "SyncRoom": {
+      "title": "SyncRoom",
+      "description": "Realtime jam room synchronized via Firestore for Vercel/serverless support",
+      "type": "object",
+      "properties": {
+        "roomCode": { "type": "string", "description": "Room identifier" },
+        "hostId": { "type": "string", "description": "Host user ID" },
+        "hostName": { "type": "string", "description": "Host display name" },
+        "isPlaying": { "type": "boolean", "description": "Whether playback is active" },
+        "positionSec": { "type": "number", "description": "Current playback position in seconds" },
+        "lastSyncTimestamp": { "type": "number", "description": "Timestamp of last position sync" },
+        "playbackRate": { "type": "number", "description": "Playback rate" },
+        "currentTrack": { "type": "object", "description": "Current track object" },
+        "queue": { "type": "array", "description": "List of queued tracks" },
+        "users": { "type": "array", "description": "List of active room participants" },
+        "reactions": { "type": "array", "description": "Recent floating reactions" },
+        "chatMessages": { "type": "array", "description": "Room chat messages" },
+        "updatedAt": { "type": "number", "description": "Last activity timestamp" }
+      },
+      "required": ["roomCode", "hostId", "users"]
     }
   },
   "firestore": {
@@ -39,6 +79,14 @@
     "/users/{userId}/playlists/{playlistId}": {
       "schema": { "$ref": "#/entities/SavedPlaylist" },
       "description": "User's saved playlists stored permanently"
+    },
+    "/couples/{coupleCode}": {
+      "schema": { "$ref": "#/entities/CoupleLink" },
+      "description": "Permanent couple connection shared between two users"
+    },
+    "/rooms/{roomId}": {
+      "schema": { "$ref": "#/entities/SyncRoom" },
+      "description": "Realtime sync room document for Vercel & serverless environments"
     }
   }
 }

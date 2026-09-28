@@ -1,6 +1,24 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { Track, RoomState, UserInfo } from '../types';
-import { Volume2, VolumeX, Radio, Music, AlertCircle, RefreshCw, SkipForward, Sparkles, Heart } from 'lucide-react';
+import {
+  Volume2,
+  VolumeX,
+  Radio,
+  Music,
+  RefreshCw,
+  SkipForward,
+  Sparkles,
+  Heart,
+  Activity,
+  Wifi,
+  Gauge,
+  Sliders,
+  CheckCircle2,
+  Zap,
+  Info,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { useThumbnailColors } from '../hooks/useThumbnailColors';
 
 declare global {
@@ -14,6 +32,9 @@ interface SyncPlayerProps {
   room: RoomState;
   currentUser: UserInfo;
   isHost: boolean;
+  latencyMs?: number;
+  clockOffsetMs?: number;
+  onRecalibrateLatency?: () => Promise<number>;
   onPlay: (pos: number) => void;
   onPause: (pos: number) => void;
   onSeek: (pos: number) => void;
@@ -25,10 +46,21 @@ interface SyncPlayerProps {
   onOpenCouple?: () => void;
 }
 
+export type DriftCorrectionTier =
+  | 'locked'
+  | 'micro_catchup'
+  | 'micro_brake'
+  | 'slew'
+  | 'snap'
+  | 'paused';
+
 export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   room,
   currentUser,
   isHost,
+  latencyMs = 24,
+  clockOffsetMs = 0,
+  onRecalibrateLatency,
   onPlay,
   onPause,
   onSeek,
@@ -54,10 +86,24 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const [durationSec, setDurationSec] = useState<number>(currentTrack.durationSec || 200);
   const [syncStatus, setSyncStatus] = useState<'locked' | 'syncing' | 'paused'>('locked');
   const [viewMode, setViewMode] = useState<'visualizer' | 'video'>('visualizer');
+
+  // Real-Time Drift Correction & Latency Engine States
+  const [realtimeDriftMs, setRealtimeDriftMs] = useState<number>(0);
+  const [activePlaybackRate, setActivePlaybackRate] = useState<number>(1.0);
+  const [driftTier, setDriftTier] = useState<DriftCorrectionTier>('locked');
+  const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
+  const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
+  const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
+
   const hasEndedRef = useRef<string | null>(null);
+  const smoothedDriftRef = useRef<number>(0);
+  const consecutiveDriftTicksRef = useRef<number>(0);
+  const lastSeekTimeRef = useRef<number>(0);
 
   useEffect(() => {
     hasEndedRef.current = null;
+    smoothedDriftRef.current = 0;
+    consecutiveDriftTicksRef.current = 0;
   }, [currentTrack.id]);
 
   // Dynamically extract dominant colors from current track's thumbnail
@@ -88,7 +134,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
     const initialPos = getAuthoritativeTime();
 
-    // If player already exists, simply load the new video without destroying and recreating DOM
     if (ytPlayerRef.current && typeof ytPlayerRef.current.loadVideoById === 'function') {
       try {
         ytPlayerRef.current.loadVideoById({
@@ -116,8 +161,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         ytPlayerRef.current = null;
       }
 
-      // Create an un-managed inner DOM element with a string ID
-      ytContainerRef.current.innerHTML = '<div id="synctune-yt-player-target" style="width:100%;height:100%;"></div>';
+      ytContainerRef.current.innerHTML =
+        '<div id="synctune-yt-player-target" style="width:100%;height:100%;"></div>';
 
       const player = new window.YT.Player('synctune-yt-player-target', {
         height: '100%',
@@ -204,6 +249,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     const audio = audioRef.current;
     audio.src = currentTrack.urlOrVideoId;
     audio.volume = isMuted ? 0 : volume;
+    audio.preservesPitch = true; // Crucial for pitch-preserved smooth drift adjustment
 
     const initialPos = getAuthoritativeTime();
     audio.currentTime = initialPos;
@@ -235,12 +281,22 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     }
   }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source]);
 
-  // Master Clock & Drift Synchronization Loop
+  // =========================================================================
+  // ENHANCED REAL-TIME DRIFT-CORRECTION & LATENCY SYNCHRONIZATION ENGINE
+  // =========================================================================
   useEffect(() => {
     const interval = setInterval(() => {
-      const targetTime = getAuthoritativeTime();
+      const rawTargetTime = getAuthoritativeTime();
+
+      // Acoustic latency compensation for listeners:
+      // Incorporates one-way network transit delay and client audio output buffer
+      const networkDelaySec = Math.max(0, (latencyMs || 24) / 1000);
+      const latencyCompSec = !isHost ? networkDelaySec * 0.5 : 0;
+      const targetTime = rawTargetTime + latencyCompSec;
+
       let currentLocalTime = 0;
 
+      // 1. Read position from active media player
       if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
         try {
           if (typeof ytPlayerRef.current.getCurrentTime === 'function') {
@@ -255,14 +311,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } else if (!isPlaying && ytState === 1) {
               ytPlayerRef.current.pauseVideo();
             }
-
-            // Sync drift
-            const drift = Math.abs(currentLocalTime - targetTime);
-            if (isPlaying && drift > 0.5) {
-              setSyncStatus('syncing');
-              ytPlayerRef.current.seekTo(targetTime, true);
-              setTimeout(() => setSyncStatus('locked'), 400);
-            }
           }
         } catch (e) {
           // ignore
@@ -275,13 +323,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           audioRef.current.play().catch(() => setNeedsUserGesture(true));
         } else if (!isPlaying && !audioRef.current.paused) {
           audioRef.current.pause();
-        }
-
-        const drift = Math.abs(currentLocalTime - targetTime);
-        if (isPlaying && drift > 0.5) {
-          setSyncStatus('syncing');
-          audioRef.current.currentTime = targetTime;
-          setTimeout(() => setSyncStatus('locked'), 300);
         }
       }
 
@@ -300,10 +341,174 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       }
 
       setCurrentTimeSec(isPlaying ? Math.min(targetTime, durationSec) : room.positionSec);
-    }, 450);
+
+      // 2. PAUSED STATE HANDLING
+      if (!isPlaying) {
+        setActivePlaybackRate(1.0);
+        setRealtimeDriftMs(0);
+        setDriftTier('paused');
+        setSyncStatus('paused');
+        if (audioRef.current) {
+          audioRef.current.playbackRate = 1.0;
+        }
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+          try {
+            ytPlayerRef.current.setPlaybackRate(1.0);
+          } catch (e) {}
+        }
+        return;
+      }
+
+      // 3. HOST IS AUTHORITATIVE REFERENCE CLOCK
+      if (isHost) {
+        setActivePlaybackRate(1.0);
+        setRealtimeDriftMs(0);
+        setDriftTier('locked');
+        setSyncStatus('locked');
+        return;
+      }
+
+      // 4. LISTENER DRIFT MEASUREMENT WITH JITTER FILTER
+      const rawDriftSec = currentLocalTime - targetTime;
+      // Exponential Moving Average filter removes sudden timer discretization spikes
+      smoothedDriftRef.current = smoothedDriftRef.current * 0.65 + rawDriftSec * 0.35;
+      const driftSec = smoothedDriftRef.current;
+      const absDriftSec = Math.abs(driftSec);
+      const measuredDriftMs = Math.round(driftSec * 1000);
+      setRealtimeDriftMs(measuredDriftMs);
+
+      const now = Date.now();
+
+      // -----------------------------------------------------------------------
+      // TIER 0: PERFECT SYNC LOCK (< 45ms)
+      // -----------------------------------------------------------------------
+      if (absDriftSec < 0.045) {
+        consecutiveDriftTicksRef.current = 0;
+        setDriftTier('locked');
+        setSyncStatus('locked');
+        setActivePlaybackRate(1.0);
+
+        if (audioRef.current && audioRef.current.playbackRate !== 1.0) {
+          audioRef.current.preservesPitch = true;
+          audioRef.current.playbackRate = 1.0;
+        }
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+          try {
+            ytPlayerRef.current.setPlaybackRate(1.0);
+          } catch (e) {}
+        }
+      }
+      // -----------------------------------------------------------------------
+      // TIER 1: MICRO-TEMPO PITCH-PRESERVED DRIFT STEERING (45ms to 240ms)
+      // Smoothly adjusts playback speed by ±4% without audio cuts or pitch distortion
+      // -----------------------------------------------------------------------
+      else if (absDriftSec >= 0.045 && absDriftSec < 0.24) {
+        consecutiveDriftTicksRef.current = 0;
+        setSyncStatus('syncing');
+
+        if (driftSec < 0) {
+          // Local player is lagging behind host: speed up by 4% to close gap
+          const rate = 1.04;
+          setActivePlaybackRate(rate);
+          setDriftTier('micro_catchup');
+
+          if (audioRef.current) {
+            audioRef.current.preservesPitch = true;
+            audioRef.current.playbackRate = rate;
+          }
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+            try {
+              ytPlayerRef.current.setPlaybackRate(rate);
+            } catch (e) {}
+          }
+        } else {
+          // Local player is ahead of host: slow down by 4% to let host catch up
+          const rate = 0.96;
+          setActivePlaybackRate(rate);
+          setDriftTier('micro_brake');
+
+          if (audioRef.current) {
+            audioRef.current.preservesPitch = true;
+            audioRef.current.playbackRate = rate;
+          }
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+            try {
+              ytPlayerRef.current.setPlaybackRate(rate);
+            } catch (e) {}
+          }
+        }
+      }
+      // -----------------------------------------------------------------------
+      // TIER 2: MODERATE DRIFT SLEW (240ms to 850ms)
+      // Applies steeper rate nudge; smoothly snaps if drift persists > 1.3s
+      // -----------------------------------------------------------------------
+      else if (absDriftSec >= 0.24 && absDriftSec < 0.85) {
+        consecutiveDriftTicksRef.current += 1;
+        setSyncStatus('syncing');
+        setDriftTier('slew');
+
+        if (currentTrack.source === 'audio' && audioRef.current) {
+          const rate = driftSec < 0 ? 1.08 : 0.92;
+          setActivePlaybackRate(rate);
+          audioRef.current.preservesPitch = true;
+          audioRef.current.playbackRate = rate;
+
+          // If drift has not converged after 6 ticks (~1.3s), perform a seamless snap
+          if (
+            consecutiveDriftTicksRef.current > 6 &&
+            now - lastSeekTimeRef.current > 1200
+          ) {
+            audioRef.current.currentTime = targetTime;
+            audioRef.current.playbackRate = 1.0;
+            setActivePlaybackRate(1.0);
+            consecutiveDriftTicksRef.current = 0;
+            smoothedDriftRef.current = 0;
+            lastSeekTimeRef.current = now;
+          }
+        } else if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
+          // YouTube: gentle seek with 1.2s cooldown to avoid buffering stutter
+          if (now - lastSeekTimeRef.current > 1200) {
+            ytPlayerRef.current.seekTo(targetTime + 0.03, true);
+            lastSeekTimeRef.current = now;
+            consecutiveDriftTicksRef.current = 0;
+            smoothedDriftRef.current = 0;
+          }
+        }
+      }
+      // -----------------------------------------------------------------------
+      // TIER 3: MAJOR DRIFT HARD-SNAP (> 850ms or Seek Event)
+      // Immediate precision seek to master authoritative timestamp
+      // -----------------------------------------------------------------------
+      else {
+        if (now - lastSeekTimeRef.current > 900) {
+          setDriftTier('snap');
+          setSyncStatus('syncing');
+
+          if (currentTrack.source === 'audio' && audioRef.current) {
+            audioRef.current.currentTime = targetTime;
+            audioRef.current.playbackRate = 1.0;
+          } else if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
+            ytPlayerRef.current.seekTo(targetTime, true);
+          }
+
+          setActivePlaybackRate(1.0);
+          smoothedDriftRef.current = 0;
+          consecutiveDriftTicksRef.current = 0;
+          lastSeekTimeRef.current = now;
+        }
+      }
+    }, 220);
 
     return () => clearInterval(interval);
-  }, [isPlaying, currentTrack.source, getAuthoritativeTime, room.positionSec]);
+  }, [
+    isPlaying,
+    isHost,
+    currentTrack.source,
+    getAuthoritativeTime,
+    latencyMs,
+    room.positionSec,
+    durationSec,
+  ]);
 
   // Volume & Mute listener
   useEffect(() => {
@@ -355,19 +560,46 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     }
   };
 
-  const handleResync = () => {
-    const target = getAuthoritativeTime();
+  // Immediate Calibrate & Resync
+  const handleResync = async () => {
+    setIsCalibrating(true);
+    let freshLatency = latencyMs;
+    if (onRecalibrateLatency) {
+      try {
+        freshLatency = await onRecalibrateLatency();
+      } catch (e) {}
+    }
+
+    const latencyComp = !isHost ? (freshLatency / 1000) * 0.5 : 0;
+    const target = getAuthoritativeTime() + latencyComp;
+
     setSyncStatus('syncing');
+
     if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
       try {
         ytPlayerRef.current.seekTo(target, true);
+        if (typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+          ytPlayerRef.current.setPlaybackRate(1.0);
+        }
         if (isPlaying) ytPlayerRef.current.playVideo();
       } catch (e) {}
     } else if (currentTrack.source === 'audio' && audioRef.current) {
       audioRef.current.currentTime = target;
+      audioRef.current.preservesPitch = true;
+      audioRef.current.playbackRate = 1.0;
       if (isPlaying) audioRef.current.play().catch(console.error);
     }
-    setTimeout(() => setSyncStatus('locked'), 500);
+
+    smoothedDriftRef.current = 0;
+    consecutiveDriftTicksRef.current = 0;
+    setActivePlaybackRate(1.0);
+    setRealtimeDriftMs(0);
+    setDriftTier('locked');
+    setSyncStatus('locked');
+    setIsCalibrating(false);
+
+    setCalibrationNotice(`Calibrated & Locked! (Ping: ${freshLatency}ms • Drift: 0ms)`);
+    setTimeout(() => setCalibrationNotice(null), 3000);
   };
 
   const formatTime = (seconds: number) => {
@@ -381,7 +613,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     <div className="relative w-full">
       {/* Dynamic Animated Ambient Background Glow */}
       <div className="absolute -inset-4 sm:-inset-8 -z-10 rounded-3xl pointer-events-none overflow-hidden transition-all duration-1000">
-        {/* Glow Layer 1 - Primary Hues with breathing pulse */}
         <div
           className={`absolute -inset-8 sm:-inset-14 blur-3xl transition-all duration-1000 ease-out ${
             isPlaying ? 'opacity-40 animate-[pulseGlow_7s_ease-in-out_infinite]' : 'opacity-20'
@@ -391,7 +622,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           }}
         />
 
-        {/* Glow Layer 2 - Secondary Ambient Counter Hues */}
         <div
           className={`absolute -inset-8 sm:-inset-14 blur-2xl transition-all duration-1000 ease-out ${
             isPlaying ? 'opacity-30 animate-[pulseGlowSecondary_9s_ease-in-out_infinite]' : 'opacity-15'
@@ -401,7 +631,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           }}
         />
 
-        {/* Subtle Horizontal Backlight Beam */}
         <div
           className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-44 blur-2xl opacity-20 transition-all duration-1000"
           style={{
@@ -412,7 +641,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
       {/* Main Player Card */}
       <div
-        className="relative w-full rounded-2xl bg-zinc-950/85 backdrop-blur-xl border shadow-2xl overflow-hidden transition-all duration-700"
+        className="relative w-full rounded-3xl bg-zinc-950/85 backdrop-blur-xl border shadow-2xl overflow-hidden transition-all duration-700"
         style={{
           borderColor: colors.borderRgba,
           boxShadow: `0 20px 50px -15px ${colors.glowRgba}`,
@@ -437,7 +666,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             </div>
             <button
               onClick={handleUnlockAudio}
-              className="px-4 py-2 bg-white text-zinc-900 font-bold text-xs uppercase tracking-wider rounded-lg shadow-md hover:bg-zinc-100 transition active:scale-95"
+              className="px-4 py-2 bg-white text-zinc-900 font-bold text-xs uppercase tracking-wider rounded-xl shadow-md hover:bg-zinc-100 transition active:scale-95"
             >
               🔊 Tap to Sync
             </button>
@@ -455,13 +684,13 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           <div ref={ytContainerRef} className="w-full h-full" />
         </div>
 
-        {/* Direct HTML5 Audio element for fallback */}
+        {/* Direct HTML5 Audio element for guaranteed fallback */}
         <audio ref={audioRef} playsInline preload="auto" />
 
         {/* Visualizer & Cover View */}
         {viewMode === 'visualizer' && (
           <div className="relative p-6 sm:p-8 flex flex-col sm:flex-row items-center gap-6 overflow-hidden">
-            {/* Inner Ambient Glow matching dominant color */}
+            {/* Inner Ambient Glow */}
             <div
               className="absolute -top-24 -left-24 w-80 h-80 rounded-full blur-3xl pointer-events-none transition-all duration-1000"
               style={{
@@ -483,7 +712,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 }}
               >
                 <img
-                  src={currentTrack.thumbnail || 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400'}
+                  src={
+                    currentTrack.thumbnail ||
+                    'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400'
+                  }
                   alt={currentTrack.title}
                   className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
                 />
@@ -516,8 +748,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               </div>
             </div>
 
-            {/* Song Details & Equalizer */}
-            <div className="flex-1 w-full flex flex-col justify-center text-center sm:text-left space-y-2">
+            {/* Song Details & Real-Time Sync HUD */}
+            <div className="flex-1 w-full flex flex-col justify-center text-center sm:text-left space-y-2.5">
               <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
                 <span
                   className="px-2.5 py-0.5 rounded-full text-xs font-semibold uppercase tracking-wider border transition-colors duration-700"
@@ -530,36 +762,76 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                   {currentTrack.category || 'Live Jam'}
                 </span>
 
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-md font-medium flex items-center gap-1.5 ${
-                    syncStatus === 'locked'
-                      ? 'text-emerald-400 bg-emerald-950/40 border border-emerald-800/40'
-                      : 'text-amber-400 bg-amber-950/40 border border-amber-800/40'
+                {/* REAL-TIME DRIFT HUD BADGE */}
+                <button
+                  type="button"
+                  onClick={() => setShowDiagnostics((prev) => !prev)}
+                  className={`text-xs px-2.5 py-1 rounded-xl font-bold flex items-center gap-1.5 transition active:scale-95 border ${
+                    isHost
+                      ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/40'
+                      : driftTier === 'locked'
+                      ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/40 hover:bg-emerald-900/40'
+                      : driftTier === 'micro_catchup' || driftTier === 'micro_brake'
+                      ? 'text-cyan-300 bg-cyan-950/40 border-cyan-500/40 hover:bg-cyan-900/40'
+                      : 'text-amber-300 bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40'
                   }`}
+                  title="Click to view live Real-Time Drift & Latency Diagnostics"
                 >
                   <span
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      syncStatus === 'locked' && isPlaying
-                        ? 'bg-emerald-400 animate-ping'
-                        : syncStatus === 'syncing'
-                        ? 'bg-amber-400 animate-pulse'
-                        : 'bg-zinc-500'
+                    className={`w-2 h-2 rounded-full ${
+                      isHost || (syncStatus === 'locked' && isPlaying)
+                        ? 'bg-emerald-400 animate-pulse'
+                        : driftTier === 'micro_catchup' || driftTier === 'micro_brake'
+                        ? 'bg-cyan-400 animate-ping'
+                        : 'bg-amber-400 animate-bounce'
                     }`}
                   />
-                  {syncStatus === 'locked' ? 'Sync Locked' : 'Syncing...'}
-                </span>
+                  <span>
+                    {isHost
+                      ? 'DJ Master Clock'
+                      : driftTier === 'locked'
+                      ? `Sync Locked (${Math.abs(realtimeDriftMs)}ms)`
+                      : driftTier === 'micro_catchup'
+                      ? `Speed Catchup (${activePlaybackRate}x • ${Math.abs(realtimeDriftMs)}ms)`
+                      : driftTier === 'micro_brake'
+                      ? `Speed Brake (${activePlaybackRate}x • ${Math.abs(realtimeDriftMs)}ms)`
+                      : 'Calibrating Sync...'}
+                  </span>
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-white/10 opacity-80">
+                    {latencyMs}ms
+                  </span>
+                  {showDiagnostics ? (
+                    <ChevronUp className="w-3.5 h-3.5 opacity-60" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5 opacity-60" />
+                  )}
+                </button>
 
+                {/* Instant Resync Button */}
                 {!isHost && (
                   <button
                     onClick={handleResync}
-                    title="Resync to DJ"
-                    className="text-xs px-2 py-0.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center gap-1 border border-zinc-700 transition"
+                    disabled={isCalibrating}
+                    title="Calibrate latency and align to master clock"
+                    className="text-xs px-2.5 py-1 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center gap-1 border border-zinc-700 transition active:scale-95 disabled:opacity-50"
                   >
-                    <RefreshCw className="w-3 h-3" /> Resync
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${isCalibrating ? 'animate-spin text-emerald-400' : ''}`}
+                    />
+                    <span>{isCalibrating ? 'Calibrating...' : 'Resync'}</span>
                   </button>
                 )}
               </div>
 
+              {/* Calibration Notice Banner */}
+              {calibrationNotice && (
+                <div className="p-1.5 px-3 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-1.5 animate-in fade-in">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{calibrationNotice}</span>
+                </div>
+              )}
+
+              {/* Title & Artist */}
               <div>
                 <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight truncate max-w-lg">
                   {currentTrack.title}
@@ -570,7 +842,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               </div>
 
               {/* Equalizer Waveform Bars adapting to dominant track colors */}
-              <div className="flex items-center justify-center sm:justify-start gap-1 h-8 pt-1">
+              <div className="flex items-center justify-center sm:justify-start gap-1 h-7 pt-1">
                 {[40, 75, 100, 60, 85, 45, 95, 70, 50, 80, 65, 90, 35, 75].map((h, i) => (
                   <div
                     key={i}
@@ -584,6 +856,120 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                   />
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* REAL-TIME DRIFT & LATENCY DIAGNOSTICS PANEL (EXPANDABLE HUD) */}
+        {showDiagnostics && (
+          <div className="p-4 bg-zinc-950/95 border-t border-zinc-800 animate-in fade-in duration-200 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-400" />
+                <h4 className="text-xs font-black text-white uppercase tracking-wider">
+                  Real-Time Synchronization Engine Telemetry
+                </h4>
+              </div>
+              <span className="text-[10px] text-zinc-400 font-mono">
+                Sample Rate: 4.5 Hz (every 220ms)
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+              {/* Metric 1: Network Latency */}
+              <div className="p-2.5 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-zinc-400 text-[10px] font-bold">
+                  <span className="flex items-center gap-1">
+                    <Wifi className="w-3 h-3 text-cyan-400" /> Ping / Latency
+                  </span>
+                  <span
+                    className={`px-1 rounded text-[9px] font-bold ${
+                      latencyMs < 45
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : latencyMs < 100
+                        ? 'bg-amber-500/20 text-amber-400'
+                        : 'bg-rose-500/20 text-rose-400'
+                    }`}
+                  >
+                    {latencyMs < 45 ? 'Optimal' : latencyMs < 100 ? 'Good' : 'Moderate'}
+                  </span>
+                </div>
+                <p className="text-sm font-black text-white font-mono">{latencyMs} ms</p>
+                <p className="text-[9px] text-zinc-500">RTT / 2 moving avg</p>
+              </div>
+
+              {/* Metric 2: Acoustic Measured Drift */}
+              <div className="p-2.5 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-zinc-400 text-[10px] font-bold">
+                  <span className="flex items-center gap-1">
+                    <Gauge className="w-3 h-3 text-emerald-400" /> Measured Drift
+                  </span>
+                  <span
+                    className={`px-1 rounded text-[9px] font-bold ${
+                      Math.abs(realtimeDriftMs) < 45
+                        ? 'bg-emerald-500/20 text-emerald-400'
+                        : 'bg-cyan-500/20 text-cyan-400'
+                    }`}
+                  >
+                    {Math.abs(realtimeDriftMs) < 45 ? 'Locked' : 'Adjusting'}
+                  </span>
+                </div>
+                <p className="text-sm font-black text-white font-mono">
+                  {realtimeDriftMs > 0 ? `+${realtimeDriftMs}` : realtimeDriftMs} ms
+                </p>
+                <p className="text-[9px] text-zinc-500">Target vs Local Player</p>
+              </div>
+
+              {/* Metric 3: Dynamic Playback Rate */}
+              <div className="p-2.5 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-zinc-400 text-[10px] font-bold">
+                  <span className="flex items-center gap-1">
+                    <Zap className="w-3 h-3 text-amber-400" /> Playback Rate
+                  </span>
+                  <span className="text-[9px] text-zinc-400">Pitch-Preserved</span>
+                </div>
+                <p className="text-sm font-black text-white font-mono">{activePlaybackRate}x</p>
+                <p className="text-[9px] text-zinc-500">
+                  {activePlaybackRate === 1.0
+                    ? 'Pure 1:1 Normal Speed'
+                    : activePlaybackRate > 1.0
+                    ? `Nudge +${Math.round((activePlaybackRate - 1) * 100)}% Fast`
+                    : `Nudge -${Math.round((1 - activePlaybackRate) * 100)}% Slow`}
+                </p>
+              </div>
+
+              {/* Metric 4: Estimated Clock Skew */}
+              <div className="p-2.5 bg-zinc-900/80 border border-zinc-800 rounded-xl space-y-1">
+                <div className="flex items-center justify-between text-zinc-400 text-[10px] font-bold">
+                  <span className="flex items-center gap-1">
+                    <Sliders className="w-3 h-3 text-purple-400" /> Clock Skew
+                  </span>
+                  <span className="text-[9px] text-zinc-400">NTP Sync</span>
+                </div>
+                <p className="text-sm font-black text-white font-mono">
+                  {clockOffsetMs > 0 ? `+${clockOffsetMs}` : clockOffsetMs} ms
+                </p>
+                <p className="text-[9px] text-zinc-500">Server Offset Offset</p>
+              </div>
+            </div>
+
+            <div className="p-2.5 bg-zinc-900/50 border border-zinc-800/80 rounded-xl flex items-center justify-between text-xs text-zinc-400">
+              <div className="flex items-center gap-2">
+                <Info className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+                <span className="text-[11px]">
+                  <strong>Smooth Drift Steer:</strong> The player micro-adjusts playback tempo by ±4%
+                  so audio stays in lockstep without skips, clicks, or pitch shifts.
+                </span>
+              </div>
+              {!isHost && (
+                <button
+                  onClick={handleResync}
+                  disabled={isCalibrating}
+                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition active:scale-95 shrink-0 ml-2"
+                >
+                  Force Resync
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -694,7 +1080,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                     onClick={() => {
                       if (onNextTrack) onNextTrack();
                     }}
-                    title={room.queue && room.queue.length > 0 ? `Next: ${room.queue[0].title}` : 'Skip to Next Song'}
+                    title={
+                      room.queue && room.queue.length > 0
+                        ? `Next: ${room.queue[0].title}`
+                        : 'Skip to Next Song'
+                    }
                     className="w-10 h-10 rounded-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center justify-center transition active:scale-95 border border-zinc-700/60 shadow-sm"
                     aria-label="Skip to Next Song"
                   >

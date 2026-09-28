@@ -390,6 +390,16 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
           setRoomCode(code);
           setMode('join_code');
         }}
+        onStartCoupleJam={(track, targetCode) => {
+          onJoin({
+            roomCode: targetCode,
+            userName: userName.trim() || authUser?.displayName || 'Partner',
+            role: 'host',
+            avatar: '💖',
+          });
+        }}
+        authUser={authUser}
+        onLogin={onLogin}
       />
 
       {/* Footer */}

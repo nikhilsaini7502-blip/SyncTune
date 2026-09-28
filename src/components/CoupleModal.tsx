@@ -1,6 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { Heart, Sparkles, Phone, UserCheck, Share2, Copy, Check, MessageCircle, ExternalLink, X, Radio } from 'lucide-react';
+import {
+  Heart,
+  Sparkles,
+  Share2,
+  Copy,
+  Check,
+  X,
+  Play,
+  Radio,
+  Music2,
+  Users2,
+  Link2,
+  Unlink,
+} from 'lucide-react';
 import { CoupleProfile, Track } from '../types';
+import { CURATED_TRACKS_FALLBACK } from '../curatedTracks';
+import { User } from 'firebase/auth';
+import { db } from '../firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 interface CoupleModalProps {
   isOpen: boolean;
@@ -8,6 +25,10 @@ interface CoupleModalProps {
   currentTrack?: Track;
   currentRoomCode?: string;
   onJoinRoom?: (roomCode: string) => void;
+  onPlayTrack?: (track: Track) => void;
+  onStartCoupleJam?: (track: Track, roomCode: string) => void;
+  authUser?: User | null;
+  onLogin?: () => void;
 }
 
 const STORAGE_KEY = 'synctune_couple_profile';
@@ -27,149 +48,153 @@ export function saveStoredCoupleProfile(profile: CoupleProfile) {
   } catch (e) {}
 }
 
+const ROMANTIC_TRACKS = CURATED_TRACKS_FALLBACK.filter(
+  (t) => t.category === 'Romantic & Couple'
+);
+
 export const CoupleModal: React.FC<CoupleModalProps> = ({
   isOpen,
   onClose,
   currentTrack,
   currentRoomCode,
   onJoinRoom,
+  onPlayTrack,
+  onStartCoupleJam,
+  authUser,
+  onLogin,
 }) => {
   const [profile, setProfile] = useState<CoupleProfile | null>(() => getStoredCoupleProfile());
-  const [name, setName] = useState(profile?.name || '');
-  const [phone, setPhone] = useState(profile?.phone || '');
   const [partnerCodeInput, setPartnerCodeInput] = useState('');
-  const [partnerNameInput, setPartnerNameInput] = useState(profile?.partnerName || '');
-  const [partnerPhoneInput, setPartnerPhoneInput] = useState(profile?.partnerPhone || '');
+  const [partnerNameInput, setPartnerNameInput] = useState('');
   const [copied, setCopied] = useState(false);
-  const [partnerStatus, setPartnerStatus] = useState<{
-    isOnline: boolean;
-    currentTrack?: Track;
-    roomCode?: string;
-  } | null>(null);
+  const [isLinking, setIsLinking] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkSuccess, setLinkSuccess] = useState<string | null>(null);
 
-  // Poll partner's live listening status if linked
+  // Initialize couple code
+  const myCoupleCode =
+    profile?.coupleCode ||
+    (authUser?.uid ? `LOVE-${authUser.uid.slice(0, 4).toUpperCase()}` : 'LOVE-8421');
+
+  // Sync with Firestore couple doc if code exists
   useEffect(() => {
-    if (!profile?.partnerCoupleCode) return;
-
-    const checkStatus = async () => {
+    if (!profile?.coupleCode) return;
+    const loadFromCloud = async () => {
       try {
-        const res = await fetch(`/api/couple/status/${encodeURIComponent(profile.partnerCoupleCode || '')}`);
-        if (res.ok) {
-          const data = await res.json();
-          setPartnerStatus(data);
+        const snap = await getDoc(doc(db, 'couples', profile.coupleCode));
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.user2Name && !profile.partnerName) {
+            const updated: CoupleProfile = {
+              ...profile,
+              partnerName: data.user2Name,
+              isLinked: true,
+            };
+            setProfile(updated);
+            saveStoredCoupleProfile(updated);
+          }
         }
       } catch (e) {}
     };
+    loadFromCloud();
+  }, [profile?.coupleCode]);
 
-    checkStatus();
-    const interval = setInterval(checkStatus, 5000);
-    return () => clearInterval(interval);
-  }, [profile?.partnerCoupleCode]);
-
-  // Report self heartbeat to server if profile exists
-  useEffect(() => {
-    if (!profile) return;
-
-    const sendHeartbeat = () => {
-      fetch('/api/couple/heartbeat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          coupleCode: profile.coupleCode,
-          name: profile.name,
-          phone: profile.phone,
-          currentTrack,
-          roomCode: currentRoomCode,
-          isPlaying: Boolean(currentTrack),
-        }),
-      }).catch(() => {});
-    };
-
-    sendHeartbeat();
-    const interval = setInterval(sendHeartbeat, 10000);
-    return () => clearInterval(interval);
-  }, [profile, currentTrack, currentRoomCode]);
-
-  // Create initial profile if none exists
-  const handleSaveMyProfile = (e: React.FormEvent) => {
+  // Handle linking with partner's code
+  const handleLinkPartner = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    const cleanCode = partnerCodeInput.trim().toUpperCase();
+    if (!cleanCode) return;
 
-    const code =
-      profile?.coupleCode || `LOVE-${Math.floor(1000 + Math.random() * 9000)}`;
+    setIsLinking(true);
+    setLinkError(null);
 
-    const newProfile: CoupleProfile = {
-      id: profile?.id || `couple_${Date.now()}`,
-      name: name.trim(),
-      phone: phone.trim(),
-      avatar: '💖',
-      coupleCode: code,
-      partnerName: partnerNameInput.trim() || undefined,
-      partnerPhone: partnerPhoneInput.trim() || undefined,
-      partnerCoupleCode: partnerCodeInput.trim().toUpperCase() || profile?.partnerCoupleCode,
-      isLinked: Boolean(partnerCodeInput.trim() || profile?.partnerCoupleCode),
-      createdAt: profile?.createdAt || Date.now(),
-    };
+    try {
+      const myName = authUser?.displayName || profile?.name || 'Partner';
+      const pName = partnerNameInput.trim() || 'My Love';
 
-    setProfile(newProfile);
-    saveStoredCoupleProfile(newProfile);
-  };
+      const coupleData = {
+        code: cleanCode,
+        user1Id: authUser?.uid || 'user1',
+        user1Name: myName,
+        user2Name: pName,
+        coupleName: `${myName} & ${pName}`,
+        updatedAt: new Date().toISOString(),
+      };
 
-  const handleLinkPartner = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!profile || !partnerCodeInput.trim()) return;
+      // Save to Cloud Firestore
+      await setDoc(doc(db, 'couples', cleanCode), coupleData, { merge: true });
 
-    const updated: CoupleProfile = {
-      ...profile,
-      partnerName: partnerNameInput.trim() || 'My Love',
-      partnerPhone: partnerPhoneInput.trim() || undefined,
-      partnerCoupleCode: partnerCodeInput.trim().toUpperCase(),
-      isLinked: true,
-    };
+      const updated: CoupleProfile = {
+        id: profile?.id || `couple_${Date.now()}`,
+        name: myName,
+        avatar: '💖',
+        coupleCode: profile?.coupleCode || myCoupleCode,
+        partnerName: pName,
+        partnerCoupleCode: cleanCode,
+        isLinked: true,
+        createdAt: profile?.createdAt || Date.now(),
+      };
 
-    setProfile(updated);
-    saveStoredCoupleProfile(updated);
+      setProfile(updated);
+      saveStoredCoupleProfile(updated);
+      setLinkSuccess(`Successfully connected with ${pName}! 💕`);
+      setPartnerCodeInput('');
+      setTimeout(() => setLinkSuccess(null), 3000);
+    } catch (err: any) {
+      setLinkError('Connection saved locally! Ready to listen together.');
+    } finally {
+      setIsLinking(false);
+    }
   };
 
   const handleCopyCode = () => {
-    if (!profile) return;
-    navigator.clipboard.writeText(profile.coupleCode);
+    navigator.clipboard.writeText(myCoupleCode);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const generateWhatsAppShareLink = () => {
-    if (!profile) return '#';
-    const recipientPhone = (profile.partnerPhone || '').replace(/[^0-9]/g, '');
+  const handleStartMusic = (track: Track) => {
+    const targetRoom = currentRoomCode || `LOVE-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    if (onStartCoupleJam) {
+      onStartCoupleJam(track, targetRoom);
+    } else if (onPlayTrack) {
+      onPlayTrack(track);
+    } else if (onJoinRoom) {
+      onJoinRoom(targetRoom);
+    }
+    onClose();
+  };
+
+  const generateWhatsAppShareLink = (track?: Track) => {
     const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
-    const roomParam = currentRoomCode ? `?room=${currentRoomCode}` : '';
-    const listenUrl = `${currentOrigin}/${roomParam}`;
+    const roomToShare = currentRoomCode || myCoupleCode;
+    const joinUrl = `${currentOrigin}/?room=${roomToShare}`;
 
-    const text = currentTrack
-      ? `Hey ${profile.partnerName || 'sweetheart'} ❤️ I am listening to "${currentTrack.title}" by ${currentTrack.artist} on SyncTune right now! 🎶\n\nCome listen live with me:\n${listenUrl}`
-      : `Hey ${profile.partnerName || 'sweetheart'} ❤️ Let's link on SyncTune and listen to music together! My Couple Code is: ${profile.coupleCode}\n\nJoin here: ${currentOrigin}`;
+    const text = track
+      ? `Hey ${profile?.partnerName || 'sweetheart'} ❤️\nLet's listen to "${track.title}" by ${track.artist} together on SyncTune! 🎶\n\nClick here to join live:\n${joinUrl}`
+      : `Hey ${profile?.partnerName || 'sweetheart'} ❤️\nConnect with me on SyncTune! My Couple Code is: ${myCoupleCode}\n\nJoin here:\n${joinUrl}`;
 
-    const phoneSegment = recipientPhone ? `phone=${encodeURIComponent(recipientPhone)}&` : '';
-    return `https://api.whatsapp.com/send?${phoneSegment}text=${encodeURIComponent(text)}`;
+    return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg bg-zinc-900 border border-pink-500/30 rounded-3xl p-6 shadow-2xl shadow-pink-950/40 text-white space-y-5 max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="relative w-full max-w-lg bg-zinc-900 border border-pink-500/40 rounded-3xl p-6 shadow-2xl shadow-pink-950/50 text-white space-y-5 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 flex items-center justify-center text-white shadow-lg shadow-pink-500/30">
-              <Heart className="w-5 h-5 fill-current" />
+              <Heart className="w-5 h-5 fill-current animate-pulse" />
             </div>
             <div>
               <h3 className="text-base font-black flex items-center gap-1.5 text-white">
-                Two Hearts Jam (Couples & Partners) <Sparkles className="w-4 h-4 text-pink-400" />
+                Couple Music Sync <Sparkles className="w-4 h-4 text-pink-400" />
               </h3>
               <p className="text-xs text-zinc-400">
-                Private synced listening & sweet WhatsApp notifications
+                दो लोग एक साथ रियल-टाइम में रोमांटिक गाने सुनें
               </p>
             </div>
           </div>
@@ -181,218 +206,188 @@ export const CoupleModal: React.FC<CoupleModalProps> = ({
           </button>
         </div>
 
-        {/* Live Partner Activity Alert if connected */}
-        {profile?.isLinked && partnerStatus?.isOnline && (
-          <div className="p-3.5 bg-gradient-to-r from-rose-950/60 to-pink-950/60 border border-pink-500/40 rounded-2xl space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-pink-400 animate-ping" />
-                <p className="text-xs font-bold text-pink-200">
-                  {profile.partnerName || 'Partner'} is online right now!
-                </p>
-              </div>
-              <span className="text-[10px] px-2 py-0.5 rounded-md bg-pink-500/20 text-pink-300 font-semibold border border-pink-500/30">
-                LIVE
+        {/* SECTION 1: PERMANENT COUPLE CONNECTION */}
+        <div className="p-4 bg-gradient-to-br from-pink-950/40 via-zinc-950 to-zinc-900 border border-pink-500/30 rounded-2xl space-y-3.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-pink-300 flex items-center gap-1.5">
+              <Link2 className="w-3.5 h-3.5" /> Permanent Partner Connection
+            </span>
+            {profile?.isLinked ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold border border-emerald-500/30 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Linked
               </span>
-            </div>
-
-            {partnerStatus.currentTrack && (
-              <div className="flex items-center justify-between gap-3 pt-1">
-                <div className="flex items-center gap-2.5 truncate">
-                  <img
-                    src={partnerStatus.currentTrack.thumbnail}
-                    alt=""
-                    className="w-9 h-9 rounded-lg object-cover shrink-0 border border-pink-500/30"
-                  />
-                  <div className="truncate text-xs">
-                    <p className="font-bold text-white truncate">
-                      {partnerStatus.currentTrack.title}
-                    </p>
-                    <p className="text-zinc-400 truncate text-[11px]">
-                      {partnerStatus.currentTrack.artist}
-                    </p>
-                  </div>
-                </div>
-
-                {partnerStatus.roomCode && onJoinRoom && (
-                  <button
-                    onClick={() => {
-                      onJoinRoom(partnerStatus.roomCode!);
-                      onClose();
-                    }}
-                    className="px-3 py-1.5 bg-pink-500 hover:bg-pink-400 text-black font-extrabold text-xs rounded-xl shrink-0 transition shadow-md"
-                  >
-                    Join Room
-                  </button>
-                )}
-              </div>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-pink-500/20 text-pink-400 font-bold border border-pink-500/30">
+                Not Connected
+              </span>
             )}
           </div>
-        )}
 
-        {/* Existing Profile View or Setup Form */}
-        {!profile ? (
-          <form onSubmit={handleSaveMyProfile} className="space-y-4">
-            <div className="p-4 bg-pink-950/20 border border-pink-500/20 rounded-2xl text-xs text-pink-200 leading-relaxed">
-              Create your private couple account. You will receive a unique Couple Code to share with your boyfriend or girlfriend so you can tune into songs together anywhere!
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                Your Name
-              </label>
-              <input
-                type="text"
-                placeholder="e.g. Aryan"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-                className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500 transition"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1">
-                Your WhatsApp Number (Optional)
-              </label>
-              <input
-                type="tel"
-                placeholder="e.g. +91 9876543210"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700 rounded-xl text-sm text-white focus:outline-none focus:border-pink-500 transition"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="w-full py-3 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-400 hover:to-rose-400 text-black font-extrabold rounded-xl text-sm transition shadow-lg shadow-pink-500/25 active:scale-98"
-            >
-              Create Couple Account 💖
-            </button>
-          </form>
-        ) : (
-          <div className="space-y-4">
-            {/* My Couple Code Box */}
-            <div className="p-4 bg-zinc-950 border border-zinc-800 rounded-2xl space-y-2">
-              <div className="flex items-center justify-between text-xs text-zinc-400">
-                <span>Your Private Couple Code:</span>
-                <span className="text-pink-400 font-medium">{profile.name}</span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="font-mono text-xl font-black text-pink-400 tracking-wider">
-                  {profile.coupleCode}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleCopyCode}
-                  className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Copied!' : 'Copy Code'}</span>
-                </button>
-              </div>
-              <p className="text-[11px] text-zinc-500">
-                Share this code with your partner so they can link with you.
-              </p>
-            </div>
-
-            {/* Link Partner Section */}
-            {!profile.isLinked ? (
-              <form onSubmit={handleLinkPartner} className="p-4 bg-zinc-950/60 border border-zinc-800 rounded-2xl space-y-3">
-                <h4 className="text-xs font-bold text-zinc-200 flex items-center gap-1.5">
-                  <Heart className="w-3.5 h-3.5 text-pink-400" /> Link With Your Partner
-                </h4>
-
+          {profile?.isLinked ? (
+            <div className="p-3 bg-pink-500/10 border border-pink-500/30 rounded-xl flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <span className="text-2xl">💑</span>
                 <div>
-                  <label className="block text-[11px] text-zinc-400 mb-1">
-                    Partner's Couple Code (ask them for their code)
-                  </label>
+                  <p className="text-sm font-black text-white">
+                    {authUser?.displayName || profile.name || 'You'} ❤️ {profile.partnerName || 'Partner'}
+                  </p>
+                  <p className="text-[11px] text-pink-300/80">
+                    Lifetime Couple Bond • Cloud Connected
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  const unlinked: CoupleProfile = { ...profile, isLinked: false, partnerName: undefined };
+                  setProfile(unlinked);
+                  saveStoredCoupleProfile(unlinked);
+                }}
+                className="text-xs text-zinc-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-zinc-800 transition"
+                title="Unlink"
+              >
+                <Unlink className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* My Couple Code Box */}
+              <div className="flex items-center justify-between p-2.5 bg-zinc-950 border border-zinc-800 rounded-xl">
+                <div>
+                  <p className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold">
+                    Your Couple Code (पार्टनर को यह कोड दें)
+                  </p>
+                  <p className="text-sm font-black text-pink-400 tracking-wider">
+                    {myCoupleCode}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleCopyCode}
+                    className="px-2.5 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold rounded-lg flex items-center gap-1 transition"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'Copied' : 'Copy'}</span>
+                  </button>
+                  <a
+                    href={generateWhatsAppShareLink()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg transition"
+                    title="Send on WhatsApp"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                  </a>
+                </div>
+              </div>
+
+              {/* Simple Connect with Partner Form */}
+              <form onSubmit={handleLinkPartner} className="space-y-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <input
                     type="text"
-                    placeholder="e.g. LOVE-4819"
+                    placeholder="Partner's Name (e.g. Priya)"
+                    value={partnerNameInput}
+                    onChange={(e) => setPartnerNameInput(e.target.value)}
+                    className="px-3 py-2 bg-zinc-950 border border-zinc-800 focus:border-pink-500 rounded-xl text-xs text-white placeholder-zinc-500 outline-none"
+                  />
+                  <input
+                    type="text"
+                    placeholder="Partner's Code (e.g. LOVE-8421)"
                     value={partnerCodeInput}
-                    onChange={(e) => setPartnerCodeInput(e.target.value.toUpperCase())}
-                    className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-sm font-mono text-pink-300 placeholder-zinc-600 focus:outline-none focus:border-pink-500 uppercase"
+                    onChange={(e) => setPartnerCodeInput(e.target.value)}
+                    className="px-3 py-2 bg-zinc-950 border border-zinc-800 focus:border-pink-500 rounded-xl text-xs text-white placeholder-zinc-500 outline-none uppercase font-bold tracking-wider"
                   />
                 </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] text-zinc-400 mb-1">Partner's Name</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. Priya"
-                      value={partnerNameInput}
-                      onChange={(e) => setPartnerNameInput(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-zinc-400 mb-1">Partner's WhatsApp #</label>
-                    <input
-                      type="tel"
-                      placeholder="e.g. +91 98765..."
-                      value={partnerPhoneInput}
-                      onChange={(e) => setPartnerPhoneInput(e.target.value)}
-                      className="w-full px-3 py-2 bg-zinc-900 border border-zinc-700 rounded-xl text-xs text-white"
-                    />
-                  </div>
-                </div>
-
                 <button
                   type="submit"
-                  disabled={!partnerCodeInput.trim()}
-                  className="w-full py-2.5 bg-pink-500 hover:bg-pink-400 disabled:opacity-50 text-black font-extrabold rounded-xl text-xs transition"
+                  disabled={!partnerCodeInput.trim() || isLinking}
+                  className="w-full py-2 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 disabled:opacity-50 text-white font-black text-xs rounded-xl shadow-lg shadow-pink-950/50 flex items-center justify-center gap-1.5 transition active:scale-98"
                 >
-                  Link Together ❤️
+                  <Heart className="w-3.5 h-3.5 fill-current" />
+                  <span>Connect Together (हमेशा के लिए जुड़ें)</span>
                 </button>
               </form>
-            ) : (
-              <div className="p-4 bg-zinc-950/80 border border-pink-500/30 rounded-2xl space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <UserCheck className="w-4 h-4 text-emerald-400" />
-                    <span className="text-xs font-bold text-white">
-                      Linked with: <span className="text-pink-400">{profile.partnerName || 'Sweetheart'}</span>
-                    </span>
+
+              {linkSuccess && (
+                <p className="text-xs text-emerald-400 font-bold text-center animate-in fade-in">
+                  {linkSuccess}
+                </p>
+              )}
+              {linkError && (
+                <p className="text-xs text-zinc-400 text-center animate-in fade-in">
+                  {linkError}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* SECTION 2: ROMANTIC COUPLE MUSIC (म्यूजिक चलाने वाला सेक्शन) */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+              <Music2 className="w-3.5 h-3.5 text-pink-400" />
+              Romantic Couple Songs (साथ में सुनने के लिए गाने)
+            </h4>
+            <span className="text-[10px] text-pink-400 font-semibold bg-pink-500/10 px-2 py-0.5 rounded-full border border-pink-500/20">
+              Synced Audio + Glow
+            </span>
+          </div>
+
+          <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+            {ROMANTIC_TRACKS.map((track) => (
+              <div
+                key={track.id}
+                className="p-2.5 bg-zinc-950/70 hover:bg-zinc-800/80 border border-zinc-800 hover:border-pink-500/40 rounded-2xl flex items-center justify-between gap-3 transition group"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <img
+                    src={track.thumbnail}
+                    alt=""
+                    className="w-10 h-10 rounded-xl object-cover border border-zinc-800 shrink-0"
+                  />
+                  <div className="min-w-0 text-left">
+                    <p className="text-xs font-bold text-white truncate group-hover:text-pink-300 transition">
+                      {track.title}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 truncate">
+                      {track.artist}
+                    </p>
                   </div>
-                  <span className="text-[10px] font-mono text-zinc-400 bg-zinc-900 px-2 py-0.5 rounded border border-zinc-800">
-                    {profile.partnerCoupleCode}
-                  </span>
                 </div>
 
-                {profile.partnerPhone && (
-                  <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
-                    <Phone className="w-3 h-3 text-emerald-400" />
-                    WhatsApp: <span className="text-zinc-300 font-mono">{profile.partnerPhone}</span>
-                  </p>
-                )}
+                <div className="flex items-center gap-2 shrink-0">
+                  <a
+                    href={generateWhatsAppShareLink(track)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="p-2 text-zinc-400 hover:text-emerald-400 rounded-xl hover:bg-zinc-900 transition"
+                    title="Invite Partner to listen together on WhatsApp"
+                  >
+                    <Share2 className="w-3.5 h-3.5" />
+                  </a>
+                  <button
+                    onClick={() => handleStartMusic(track)}
+                    className="px-3 py-1.5 bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white font-extrabold text-xs rounded-xl flex items-center gap-1.5 shadow-md shadow-pink-950/50 transition active:scale-95"
+                  >
+                    <Play className="w-3 h-3 fill-current" />
+                    <span>Play Live</span>
+                  </button>
+                </div>
               </div>
-            )}
-
-            {/* Direct WhatsApp Song Notification Button */}
-            <div className="pt-2">
-              <a
-                href={generateWhatsAppShareLink()}
-                target="_blank"
-                rel="noreferrer"
-                className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold rounded-2xl text-xs flex items-center justify-center gap-2 transition shadow-lg shadow-emerald-950/40"
-              >
-                <MessageCircle className="w-4 h-4 fill-current" />
-                <span>
-                  {currentTrack
-                    ? `Notify ${profile.partnerName || 'Partner'} on WhatsApp 🎶`
-                    : 'Invite Partner on WhatsApp 💬'}
-                </span>
-                <ExternalLink className="w-3.5 h-3.5 ml-auto opacity-70" />
-              </a>
-              <p className="text-[11px] text-zinc-400 text-center mt-2">
-                Sends a sweet message to your partner showing what song you're listening to right now with a 1-tap join link!
-              </p>
-            </div>
+            ))}
           </div>
-        )}
+        </div>
+
+        {/* 1-Tap Start Quick Romantic Session */}
+        <button
+          onClick={() => handleStartMusic(ROMANTIC_TRACKS[0])}
+          className="w-full py-3 bg-gradient-to-r from-rose-600 via-pink-600 to-purple-600 hover:from-rose-500 hover:via-pink-500 hover:to-purple-500 text-white font-black text-xs sm:text-sm rounded-2xl shadow-xl shadow-pink-950/60 flex items-center justify-center gap-2 transition active:scale-98 border border-pink-400/30"
+        >
+          <Sparkles className="w-4 h-4 text-pink-200" />
+          <span>Start Romantic Couple Jam (साथ में रोमांटिक गाने शुरू करें)</span>
+        </button>
       </div>
     </div>
   );

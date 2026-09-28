@@ -10,6 +10,7 @@ import { MembersAndChatModal } from './components/MembersAndChatModal';
 import { ReactionsOverlay } from './components/ReactionsOverlay';
 import { AmbienceOverlay } from './components/AmbienceOverlay';
 import { CoupleModal } from './components/CoupleModal';
+import { CURATED_TRACKS_FALLBACK } from './curatedTracks';
 import { Track, AmbienceConfig } from './types';
 import { QrCode, Sparkles, Share2, Music, Users, Radio, Heart } from 'lucide-react';
 
@@ -28,6 +29,8 @@ export default function App() {
     currentUser,
     room,
     latencyMs,
+    clockOffsetMs,
+    recalibrateLatency,
     reactions,
     chatMessages,
     error,
@@ -58,7 +61,7 @@ export default function App() {
     volume: 0.35,
     intensity: 'vibrant',
   });
-  const [curatedTracks, setCuratedTracks] = useState<Track[]>([]);
+  const [curatedTracks, setCuratedTracks] = useState<Track[]>(CURATED_TRACKS_FALLBACK);
 
   // Check URL query params for ?room=CODE
   useEffect(() => {
@@ -71,17 +74,17 @@ export default function App() {
     }
   }, []);
 
-  // Fetch curated tracks library
+  // Fetch curated tracks library from server or retain fallback
   useEffect(() => {
     fetch('/api/curated-tracks')
       .then((res) => res.json())
       .then((data) => {
-        if (data.tracks) {
+        if (data.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
           setCuratedTracks(data.tracks);
         }
       })
-      .catch((err) => {
-        console.error('Failed to load curated tracks:', err);
+      .catch(() => {
+        // Retain CURATED_TRACKS_FALLBACK for Vercel / serverless deployments
       });
   }, []);
 
@@ -186,6 +189,9 @@ export default function App() {
           room={room}
           currentUser={currentUser}
           isHost={isHost}
+          latencyMs={latencyMs}
+          clockOffsetMs={clockOffsetMs}
+          onRecalibrateLatency={recalibrateLatency}
           onPlay={(pos) => sendPlay(pos)}
           onPause={(pos) => sendPause(pos)}
           onSeek={(pos) => sendSeek(pos)}
@@ -265,6 +271,16 @@ export default function App() {
             avatar: currentUser.avatar,
           })
         }
+        onPlayTrack={(track) => {
+          sendChangeTrack(track, true);
+          setAmbienceConfig((prev) => ({ ...prev, theme: 'romantic', intensity: 'vibrant' }));
+        }}
+        onStartCoupleJam={(track) => {
+          sendChangeTrack(track, true);
+          setAmbienceConfig((prev) => ({ ...prev, theme: 'romantic', intensity: 'vibrant' }));
+        }}
+        authUser={authUser}
+        onLogin={loginWithGoogle}
       />
 
       {/* Quick Access Floating Glow Chip */}

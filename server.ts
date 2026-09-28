@@ -216,6 +216,12 @@ interface CoupleLiveStatus {
 const coupleStatuses = new Map<string, CoupleLiveStatus>();
 
 // API endpoints
+app.get('/api/ping', (req, res) => {
+  res.json({
+    serverTime: Date.now(),
+  });
+});
+
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
