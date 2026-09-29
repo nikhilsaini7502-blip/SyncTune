@@ -37,6 +37,11 @@ service cloud.firestore {
       allow delete: if isSignedIn();
     }
 
+    // Connection testing
+    match /test/{docId} {
+      allow get: if true;
+    }
+
     // Realtime Sync Rooms (Supports Vercel & serverless deployments)
     match /rooms/{roomId} {
       allow get, list: if true;

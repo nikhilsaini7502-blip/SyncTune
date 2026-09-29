@@ -1,6 +1,7 @@
 import React from 'react';
 import { RoomState, UserInfo } from '../types';
-import { QrCode, Users, Wifi, Disc3, Sparkles, LogOut, Copy, Check } from 'lucide-react';
+import { User } from 'firebase/auth';
+import { QrCode, Users, Wifi, Disc3, Sparkles, LogOut, Copy, Check, User as UserIcon } from 'lucide-react';
 
 interface PartyHeaderProps {
   room: RoomState;
@@ -9,6 +10,8 @@ interface PartyHeaderProps {
   onOpenQR: () => void;
   onOpenMembers: () => void;
   onLeaveRoom: () => void;
+  authUser?: User | null;
+  onOpenAuth?: () => void;
 }
 
 export const PartyHeader: React.FC<PartyHeaderProps> = ({
@@ -18,6 +21,8 @@ export const PartyHeader: React.FC<PartyHeaderProps> = ({
   onOpenQR,
   onOpenMembers,
   onLeaveRoom,
+  authUser,
+  onOpenAuth,
 }) => {
   const isHost = currentUser.role === 'host';
   const [copied, setCopied] = React.useState(false);
@@ -104,8 +109,39 @@ export const PartyHeader: React.FC<PartyHeaderProps> = ({
             <span>{latencyMs}ms</span>
           </div>
 
-          {/* User profile / Leave */}
+          {/* User profile, Auth & Leave */}
           <div className="flex items-center gap-2 pl-1 border-l border-zinc-800">
+            {onOpenAuth && (
+              <button
+                type="button"
+                onClick={onOpenAuth}
+                className="flex items-center gap-1.5 p-1 px-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-xs transition active:scale-95"
+                title={authUser ? `Logged in as ${authUser.displayName || authUser.email}` : 'Login with Google'}
+              >
+                {authUser ? (
+                  <>
+                    {authUser.photoURL ? (
+                      <img
+                        src={authUser.photoURL}
+                        alt=""
+                        className="w-5 h-5 rounded-lg object-cover border border-emerald-400/50"
+                      />
+                    ) : (
+                      <span className="w-5 h-5 rounded-lg bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-[10px]">
+                        {authUser.displayName?.[0] || 'U'}
+                      </span>
+                    )}
+                    <span className="text-[11px] font-bold text-emerald-400 hidden xl:inline">Account</span>
+                  </>
+                ) : (
+                  <>
+                    <UserIcon className="w-3.5 h-3.5 text-zinc-400" />
+                    <span className="text-[11px] font-bold text-zinc-300">Login</span>
+                  </>
+                )}
+              </button>
+            )}
+
             <span
               className="w-7 h-7 rounded-full bg-zinc-800 border border-zinc-700 hidden sm:flex items-center justify-center text-xs"
               title={`${currentUser.name} (${isHost ? 'Host DJ' : 'Listener'})`}

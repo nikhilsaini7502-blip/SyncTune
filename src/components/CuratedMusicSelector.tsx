@@ -6,6 +6,7 @@ import {
   Plus,
   Search,
   Music,
+  Music2,
   ListMusic,
   Check,
   Sparkles,
@@ -23,6 +24,12 @@ import {
   FileAudio,
   Cloud,
 } from 'lucide-react';
+import {
+  getAllDeviceStoredTracks,
+  saveAudioFileToDeviceStorage,
+  deleteDeviceStoredTrack,
+  clearAllDeviceStoredTracks,
+} from '../utils/deviceStorage';
 
 interface CuratedMusicSelectorProps {
   curatedTracks: Track[];
@@ -41,76 +48,14 @@ interface CuratedMusicSelectorProps {
 
 const PLAYLIST_STORAGE_KEY = 'synctune_saved_playlists';
 
-const DEFAULT_PLAYLISTS: SavedPlaylist[] = [
-  {
-    id: 'pl_romantic',
-    name: 'Romantic Moments (Couples Jam) 💖',
-    description: 'Perfect songs for late night talks and long drives together',
-    emoji: '💑',
-    createdAt: Date.now(),
-    tracks: [
-      {
-        id: 'b1',
-        title: 'Kesariya',
-        artist: 'Arijit Singh, Pritam',
-        source: 'youtube',
-        urlOrVideoId: 'BddP6PYo2gs',
-        durationSec: 268,
-        thumbnail: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400',
-        category: 'Bollywood',
-      },
-      {
-        id: 'b3',
-        title: 'Chaleya',
-        artist: 'Arijit Singh, Shilpa Rao',
-        source: 'youtube',
-        urlOrVideoId: 'VAdGW7QDJiU',
-        durationSec: 200,
-        thumbnail: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400',
-        category: 'Bollywood',
-      },
-      {
-        id: 'b6',
-        title: 'Apna Bana Le',
-        artist: 'Arijit Singh, Sachin-Jigar',
-        source: 'youtube',
-        urlOrVideoId: 'ElZfdU54Cp8',
-        durationSec: 261,
-        thumbnail: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400',
-        category: 'Bollywood',
-      },
-    ],
-  },
-  {
-    id: 'pl_party',
-    name: 'Campus Party & Energy ⚡',
-    description: 'High energy beats for dance, gym and weekend parties',
-    emoji: '🔥',
-    createdAt: Date.now(),
-    tracks: [
-      {
-        id: 'b2',
-        title: 'Brown Munde',
-        artist: 'AP Dhillon, Gurinder Gill',
-        source: 'youtube',
-        urlOrVideoId: 'VNs_cCtdbPc',
-        durationSec: 267,
-        thumbnail: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=400',
-        category: 'Punjabi',
-      },
-      {
-        id: 'b4',
-        title: 'Illuminati',
-        artist: 'Sushin Shyam, Dabzee',
-        source: 'youtube',
-        urlOrVideoId: 'tOM-nWPcR4U',
-        durationSec: 195,
-        thumbnail: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400',
-        category: 'Party Beats',
-      },
-    ],
-  },
-];
+const DEFAULT_PLAYLISTS: SavedPlaylist[] = [];
+
+export const formatDuration = (seconds?: number): string => {
+  if (!seconds || isNaN(seconds) || seconds < 0) return '0:00';
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+};
 
 export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   curatedTracks,
@@ -137,18 +82,56 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   const [isSpotifyConnected, setIsSpotifyConnected] = useState<boolean>(false);
   const [isResolvingSpotify, setIsResolvingSpotify] = useState<boolean>(false);
 
-  // File Upload State
+  // File Upload State with persistent IndexedDB storage
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadProgressText, setUploadProgressText] = useState<string>('');
+  const [deviceTracks, setDeviceTracks] = useState<Track[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Local Saved Playlists State
+  // Load stored device audio files permanently from IndexedDB
+  useEffect(() => {
+    let isMounted = true;
+    getAllDeviceStoredTracks()
+      .then((tracks) => {
+        if (isMounted) {
+          setDeviceTracks(tracks);
+        }
+      })
+      .catch((err) => {
+        console.warn('Error loading device tracks from storage:', err);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const handleDeleteDeviceTrack = async (trackId: string) => {
+    await deleteDeviceStoredTrack(trackId);
+    setDeviceTracks((prev) => prev.filter((t) => t.id !== trackId));
+    setAddedNotice('File removed from device library');
+    setTimeout(() => setAddedNotice(null), 2000);
+  };
+
+  const handleClearAllDeviceTracks = async () => {
+    await clearAllDeviceStoredTracks();
+    setDeviceTracks([]);
+    setAddedNotice('Cleared device library');
+    setTimeout(() => setAddedNotice(null), 2000);
+  };
+
+  // Local Saved Playlists State (starts clean without pre-populated playlists)
   const [savedPlaylists, setSavedPlaylists] = useState<SavedPlaylist[]>(() => {
     try {
       const stored = localStorage.getItem(PLAYLIST_STORAGE_KEY);
-      return stored ? JSON.parse(stored) : DEFAULT_PLAYLISTS;
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) {
+          return parsed.filter((p: SavedPlaylist) => p.id !== 'pl_romantic' && p.id !== 'pl_party');
+        }
+      }
+      return [];
     } catch (e) {
-      return DEFAULT_PLAYLISTS;
+      return [];
     }
   });
   const [newPlaylistName, setNewPlaylistName] = useState<string>('');
@@ -161,7 +144,6 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   // Merge local and cloud playlists
   const displayPlaylists = useMemo(() => {
     const map = new Map<string, SavedPlaylist>();
-    DEFAULT_PLAYLISTS.forEach((p) => map.set(p.id, p));
     savedPlaylists.forEach((p) => map.set(p.id, p));
     if (cloudPlaylists && cloudPlaylists.length > 0) {
       cloudPlaylists.forEach((p) => map.set(p.id, p));
@@ -210,7 +192,7 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
     }
   };
 
-  // Handle Local Device Audio File Selection (Phone & PC)
+  // Handle Local Device Audio File Selection (Phone & PC) with permanent IndexedDB storage
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -218,56 +200,85 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
     setIsUploading(true);
     setErrorMsg(null);
 
+    const newlySavedTracks: Track[] = [];
+
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      setUploadProgressText(`Uploading ${file.name} (${i + 1}/${files.length})...`);
+      setUploadProgressText(`Saving ${file.name} to Phone & PC Library (${i + 1}/${files.length})...`);
 
       try {
-        // Read file as base64
-        const base64Data = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = reject;
-          reader.readAsDataURL(file);
-        });
-
-        // Approximate duration via temporary audio element
+        // Approximate duration via temporary audio element safely
         const durationSec = await new Promise<number>((resolve) => {
           const tempAudio = document.createElement('audio');
-          tempAudio.src = URL.createObjectURL(file);
+          tempAudio.preload = 'metadata';
+          const tempUrl = URL.createObjectURL(file);
+          tempAudio.src = tempUrl;
           tempAudio.onloadedmetadata = () => {
-            resolve(Math.round(tempAudio.duration) || 180);
+            const dur = Math.round(tempAudio.duration) || 180;
+            URL.revokeObjectURL(tempUrl);
+            tempAudio.src = '';
+            tempAudio.load();
+            resolve(dur);
           };
-          tempAudio.onerror = () => resolve(180);
+          tempAudio.onerror = () => {
+            URL.revokeObjectURL(tempUrl);
+            tempAudio.src = '';
+            tempAudio.load();
+            resolve(180);
+          };
         });
 
-        const res = await fetch('/api/upload-audio', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fileName: file.name,
-            base64Data,
-            mimeType: file.type || 'audio/mpeg',
-            title: file.name.replace(/\.[^/.]+$/, ''),
-            artist: 'Local Device File',
-            durationSec,
-          }),
+        // Save directly into IndexedDB database so files STAY PERMANENTLY across all sessions & reloads!
+        const savedTrack = await saveAudioFileToDeviceStorage(file, {
+          title: file.name.replace(/\.[^/.]+$/, ''),
+          artist: 'Phone & PC Audio',
+          durationSec,
         });
 
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Upload failed');
+        newlySavedTracks.push(savedTrack);
 
-        onAddToQueue(data.track);
-        setAddedNotice(`Queued "${data.track.title}" from device!`);
+        // Background server upload for cross-device peer streaming when server is active
+        try {
+          const reader = new FileReader();
+          const base64Data = await new Promise<string>((res, rej) => {
+            reader.onload = () => res(reader.result as string);
+            reader.onerror = rej;
+            reader.readAsDataURL(file);
+          });
+          fetch('/api/upload-audio', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              base64Data,
+              mimeType: file.type || 'audio/mpeg',
+              title: savedTrack.title,
+              artist: savedTrack.artist,
+              durationSec,
+            }),
+          }).catch(() => {});
+        } catch (e) {}
+
       } catch (err: any) {
-        setErrorMsg(`Failed to upload ${file.name}: ${err.message}`);
+        setErrorMsg(`Failed to save ${file.name}: ${err.message}`);
       }
+    }
+
+    if (newlySavedTracks.length > 0) {
+      setDeviceTracks((prev) => {
+        const newIds = new Set(newlySavedTracks.map((t) => t.id));
+        return [...newlySavedTracks, ...prev.filter((t) => !newIds.has(t.id))];
+      });
+
+      setAddedNotice(
+        `Saved ${newlySavedTracks.length} song${newlySavedTracks.length > 1 ? 's' : ''} permanently to your device library! Click "Play Live" or "Queue".`
+      );
     }
 
     setIsUploading(false);
     setUploadProgressText('');
     if (fileInputRef.current) fileInputRef.current.value = '';
-    setTimeout(() => setAddedNotice(null), 3500);
+    setTimeout(() => setAddedNotice(null), 4000);
   };
 
   // Handle YouTube or direct audio stream link
@@ -631,6 +642,109 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
             </div>
           )}
 
+          {/* List of Uploaded Phone & PC Tracks */}
+          <div className="space-y-3 pt-1">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <FileAudio className="w-3.5 h-3.5 text-amber-400" />
+                  Your Device Audio Files ({deviceTracks.length})
+                </h4>
+                <p className="text-[11px] text-zinc-400">
+                  Files stay saved in your device library so you can play or queue them anytime
+                </p>
+              </div>
+
+              {deviceTracks.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearAllDeviceTracks}
+                  className="text-[11px] text-zinc-500 hover:text-rose-400 transition"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
+
+            {deviceTracks.length === 0 ? (
+              <div className="py-8 text-center border border-dashed border-zinc-800 rounded-2xl p-6 text-zinc-500 space-y-1.5 bg-zinc-950/40">
+                <FileAudio className="w-8 h-8 mx-auto text-amber-400/40" />
+                <p className="text-xs font-semibold text-zinc-300">No Audio Files Uploaded Yet</p>
+                <p className="text-[11px] text-zinc-500 max-w-sm mx-auto">
+                  Click &ldquo;Select Audio Files&rdquo; above to add songs from your phone or PC. They will stay saved here across sessions!
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-[360px] overflow-y-auto pr-1">
+                {deviceTracks.map((track) => {
+                  const isCurrent = track.id === currentTrackId;
+                  return (
+                    <div
+                      key={track.id}
+                      className={`p-3 rounded-2xl flex items-center justify-between gap-3 border transition ${
+                        isCurrent
+                          ? 'bg-amber-950/40 border-amber-500/50 shadow-md'
+                          : 'bg-zinc-950/80 hover:bg-zinc-900 border-zinc-800/80 hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0 border border-amber-500/30">
+                          <Music2 className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0 text-left">
+                          <p className="text-xs font-bold text-white truncate">
+                            {track.title}
+                          </p>
+                          <p className="text-[11px] text-zinc-400 flex items-center gap-1.5">
+                            <span>{track.artist || 'Local Audio'}</span>
+                            <span>•</span>
+                            <span className="font-mono">{formatDuration(track.durationSec)}</span>
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isHost && (
+                          <button
+                            onClick={() => {
+                              onSelectTrack(track);
+                              setAddedNotice(`Playing "${track.title}" live!`);
+                              setTimeout(() => setAddedNotice(null), 2500);
+                            }}
+                            title="Play Now for Everyone"
+                            className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs flex items-center gap-1 transition active:scale-95 shadow-sm"
+                          >
+                            <Play className="w-3 h-3 fill-current" />
+                            <span>Play Live</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            onAddToQueue(track);
+                            setAddedNotice(`Queued "${track.title}"!`);
+                            setTimeout(() => setAddedNotice(null), 2500);
+                          }}
+                          title="Add to Room Queue"
+                          className="px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white text-xs font-bold transition active:scale-95 border border-zinc-700 flex items-center gap-1"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Queue</span>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteDeviceTrack(track.id)}
+                          title="Remove from Device List"
+                          className="p-1.5 rounded-xl text-zinc-500 hover:text-rose-400 hover:bg-zinc-800 transition"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs text-zinc-400">
             <div className="p-3.5 bg-zinc-950/70 border border-zinc-800 rounded-xl flex items-start gap-2.5">
               <Smartphone className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
@@ -847,34 +961,42 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
           )}
 
           {/* Playlists List */}
-          <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
-            {displayPlaylists.map((pl) => (
-              <div key={pl.id} className="p-4 bg-zinc-950/70 border border-zinc-800 rounded-2xl space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2.5">
-                    <span className="text-xl">{pl.emoji || '🎵'}</span>
-                    <div>
-                      <h5 className="text-xs font-bold text-white">{pl.name}</h5>
-                      <p className="text-[11px] text-zinc-400">{pl.tracks.length} songs saved</p>
+          {displayPlaylists.length === 0 ? (
+            <div className="py-12 text-center text-zinc-500 space-y-2 border border-dashed border-zinc-800 rounded-2xl">
+              <Bookmark className="w-10 h-10 mx-auto opacity-40 text-pink-400" />
+              <p className="text-xs font-semibold text-zinc-300">No Playlists Yet</p>
+              <p className="text-[11px] text-zinc-500 max-w-xs mx-auto">
+                Create your first playlist using the "+ New Playlist" button above or import playlists from Spotify.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+              {displayPlaylists.map((pl) => (
+                <div key={pl.id} className="p-4 bg-zinc-950/70 border border-zinc-800 rounded-2xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-xl">{pl.emoji || '🎵'}</span>
+                      <div>
+                        <h5 className="text-xs font-bold text-white">{pl.name}</h5>
+                        <p className="text-[11px] text-zinc-400">{pl.tracks.length} songs saved</p>
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => handlePlayPlaylist(pl)}
-                      disabled={pl.tracks.length === 0}
-                      className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-black font-extrabold text-xs rounded-xl flex items-center gap-1 transition shadow-sm"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" /> Play All
-                    </button>
-                    <button
-                      onClick={() => handleQueuePlaylist(pl)}
-                      disabled={pl.tracks.length === 0}
-                      className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 text-xs font-bold rounded-xl transition"
-                    >
-                      + Queue All
-                    </button>
-                    {!DEFAULT_PLAYLISTS.some((dp) => dp.id === pl.id) && (
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handlePlayPlaylist(pl)}
+                        disabled={pl.tracks.length === 0}
+                        className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-black font-extrabold text-xs rounded-xl flex items-center gap-1 transition shadow-sm"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" /> Play All
+                      </button>
+                      <button
+                        onClick={() => handleQueuePlaylist(pl)}
+                        disabled={pl.tracks.length === 0}
+                        className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 text-zinc-300 text-xs font-bold rounded-xl transition"
+                      >
+                        + Queue All
+                      </button>
                       <button
                         onClick={async () => {
                           const filtered = savedPlaylists.filter((p) => p.id !== pl.id);
@@ -893,26 +1015,26 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>
-                    )}
+                    </div>
                   </div>
-                </div>
 
-                {pl.tracks.length > 0 && (
-                  <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-                    {pl.tracks.map((t, idx) => (
-                      <div
-                        key={`${t.id}-${idx}`}
-                        className="flex items-center gap-1.5 p-1.5 bg-zinc-900 border border-zinc-800 rounded-xl shrink-0 text-[11px] max-w-[170px]"
-                      >
-                        <img src={t.thumbnail} alt="" className="w-6 h-6 rounded-lg object-cover" />
-                        <span className="truncate text-zinc-300 font-medium">{t.title}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+                  {pl.tracks.length > 0 && (
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                      {pl.tracks.map((t, idx) => (
+                        <div
+                          key={`${t.id}-${idx}`}
+                          className="flex items-center gap-1.5 p-1.5 bg-zinc-900 border border-zinc-800 rounded-xl shrink-0 text-[11px] max-w-[170px]"
+                        >
+                          <img src={t.thumbnail} alt="" className="w-6 h-6 rounded-lg object-cover" />
+                          <span className="truncate text-zinc-300 font-medium">{t.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

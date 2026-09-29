@@ -14,7 +14,7 @@ import { CURATED_TRACKS_FALLBACK } from '../curatedTracks';
 
 export function useSyncSocket() {
   const wsRef = useRef<WebSocket | null>(null);
-  const [isConnected, setIsConnected] = useState(true); // Always ready via Firestore cloud
+  const [isConnected, setIsConnected] = useState(true);
   const [syncMode, setSyncMode] = useState<'ws' | 'firestore'>('firestore');
   const [currentUser, setCurrentUser] = useState<UserInfo | null>(null);
   const [room, setRoom] = useState<RoomState | null>(null);
@@ -53,7 +53,8 @@ export function useSyncSocket() {
     const t0 = performance.now();
     try {
       const res = await fetch('/api/ping', { cache: 'no-store' });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type');
+      if (res.ok && contentType && contentType.includes('application/json')) {
         const data = await res.json();
         const rtt = performance.now() - t0;
         updateLatencyMeasurement(rtt, data.serverTime);
@@ -67,16 +68,12 @@ export function useSyncSocket() {
 
   // Fallback ping loop if WebSocket is closed / serverless
   useEffect(() => {
-    let mounted = true;
     const interval = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       recalibrateLatency();
     }, 3200);
 
-    return () => {
-      mounted = false;
-      clearInterval(interval);
-    };
+    return () => clearInterval(interval);
   }, [recalibrateLatency]);
 
   // Attempt WebSocket connection for low-latency server setups
@@ -211,13 +208,11 @@ export function useSyncSocket() {
       };
 
       ws.onclose = () => {
-        // Fallback to Firestore mode on Vercel or when WS disconnects
         setSyncMode('firestore');
         setIsConnected(true);
       };
 
       ws.onerror = () => {
-        // On Vercel / serverless: fallback to Firestore seamlessly
         setSyncMode('firestore');
         setIsConnected(true);
       };
@@ -233,7 +228,7 @@ export function useSyncSocket() {
         wsRef.current.close();
       }
     };
-  }, []);
+  }, [updateLatencyMeasurement]);
 
   // Safe WebSocket sender helper
   const safeSend = useCallback((payload: any) => {
@@ -248,7 +243,7 @@ export function useSyncSocket() {
     return false;
   }, []);
 
-  // Universal Join Room (Works with both WebSocket & Cloud Firestore on Vercel)
+  // Universal Join Room (Dual-channel: Subscribes to Firestore real-time listener AND sends WebSocket)
   const sendJoin = useCallback(
     async (params: {
       roomId?: string;
@@ -257,40 +252,130 @@ export function useSyncSocket() {
       role: 'host' | 'listener';
       avatar?: string;
     }) => {
-      const code = (params.roomCode || params.roomId || 'JAM1').toUpperCase().trim();
+      // Generate clean 4-character code if not provided
+      let code = (params.roomCode || params.roomId || '').toUpperCase().trim();
+      if (!code) {
+        const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+        for (let i = 0; i < 4; i++) {
+          code += chars.charAt(Math.floor(Math.random() * chars.length));
+        }
+      }
       currentRoomCodeRef.current = code;
 
-      // 1. Try WebSocket if active
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({
-          type: 'join',
+      const uid =
+        auth.currentUser?.uid ||
+        `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const userObj: UserInfo = {
+        id: uid,
+        name: params.userName || (params.role === 'host' ? 'Host (DJ)' : 'Music Lover'),
+        role: params.role,
+        avatar: params.avatar || (params.role === 'host' ? '👑' : '🎧'),
+        joinedAt: Date.now(),
+        isAudioUnlocked: true,
+      };
+
+      // 1. Send WebSocket join if available
+      safeSend({
+        type: 'join',
+        roomId: code,
+        roomCode: code,
+        userName: String(userObj.name),
+        role: params.role === 'host' ? 'host' : 'listener',
+        avatar: userObj.avatar,
+      });
+
+      const initialTrack: Track = CURATED_TRACKS_FALLBACK[0];
+
+      // Optimistic instant transition for host - Never gets stuck waiting for cloud network!
+      if (params.role === 'host') {
+        const newHostRoom: RoomState = {
           roomId: code,
           roomCode: code,
-          userName: String(params.userName || ''),
-          role: params.role === 'host' ? 'host' : 'listener',
-          avatar: params.avatar ? String(params.avatar) : undefined,
-        });
+          createdAt: Date.now(),
+          hostId: uid,
+          currentTrack: initialTrack,
+          isPlaying: false,
+          positionSec: 0,
+          lastSyncTimestamp: Date.now(),
+          playbackRate: 1,
+          queue: [], // Clean empty queue
+          users: [userObj],
+        };
+
+        setCurrentUser(userObj);
+        setRoom(newHostRoom);
+        setError(null);
+
+        // Asynchronously persist to Cloud Firestore for cross-device sync
+        try {
+          const roomRef = doc(db, 'rooms', code);
+          setDoc(
+            roomRef,
+            {
+              ...newHostRoom,
+              reactions: [],
+              chatMessages: [],
+              updatedAt: Date.now(),
+            },
+            { merge: true }
+          ).catch((e) => console.warn('Firestore room setDoc error:', e));
+
+          if (firestoreUnsubRef.current) {
+            firestoreUnsubRef.current();
+          }
+
+          firestoreUnsubRef.current = onSnapshot(
+            roomRef,
+            (docSnap) => {
+              if (docSnap.exists()) {
+                const data = docSnap.data();
+
+                setRoom((prev) => {
+                  const rawUsers = data.users;
+                  const usersList: UserInfo[] = Array.isArray(rawUsers) && rawUsers.length > 0
+                    ? rawUsers
+                    : rawUsers && typeof rawUsers === 'object'
+                    ? Object.values(rawUsers)
+                    : (prev?.users || [userObj]);
+
+                  const baseTrack = data.currentTrack || prev?.currentTrack || initialTrack;
+                  return {
+                    roomId: data.roomId || code,
+                    roomCode: data.roomCode || code,
+                    createdAt: data.createdAt || Date.now(),
+                    hostId: data.hostId || uid,
+                    currentTrack: baseTrack,
+                    isPlaying: Boolean(data.isPlaying),
+                    positionSec: typeof data.positionSec === 'number' ? data.positionSec : 0,
+                    lastSyncTimestamp: Number(data.lastSyncTimestamp) || Date.now(),
+                    playbackRate: Number(data.playbackRate) || 1,
+                    queue: Array.isArray(data.queue) ? data.queue : [],
+                    users: usersList,
+                  };
+                });
+
+                if (Array.isArray(data.chatMessages)) {
+                  setChatMessages(data.chatMessages);
+                }
+              }
+            },
+            (err) => console.warn('Firestore host snapshot error:', err)
+          );
+        } catch (err: any) {
+          console.warn('Firestore host init note:', err);
+        }
+
         return;
       }
 
-      // 2. Fallback to Cloud Firestore for Vercel / serverless deployments
-      try {
-        const uid =
-          auth.currentUser?.uid ||
-          `user_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        const userObj: UserInfo = {
-          id: uid,
-          name: params.userName || (params.role === 'host' ? 'Host DJ' : 'Music Lover'),
-          role: params.role,
-          avatar: params.avatar || (params.role === 'host' ? '👑' : '🎧'),
-          joinedAt: Date.now(),
-          isAudioUnlocked: true,
-        };
+      // For Listener:
+      setCurrentUser(userObj);
+      setError(null);
 
+      // Connect to Cloud Firestore for real-time room sync
+      try {
         const roomRef = doc(db, 'rooms', code);
         const snapshot = await getDoc(roomRef);
-
-        let initialTrack: Track = CURATED_TRACKS_FALLBACK[0];
 
         if (snapshot.exists()) {
           const data = snapshot.data() as RoomState;
@@ -298,88 +383,89 @@ export function useSyncSocket() {
           const updatedUsers = existingUsers.filter((u) => u.id !== uid);
           updatedUsers.push(userObj);
 
-          await updateDoc(roomRef, {
+          updateDoc(roomRef, {
             users: updatedUsers,
             updatedAt: Date.now(),
-          });
+          }).catch(() => {});
 
           setRoom({
             ...data,
             users: updatedUsers,
           });
         } else {
-          // Create room in Firestore (Host)
-          const newRoom: RoomState = {
+          // Optimistic listener fallback room while waiting for sync
+          const fallbackRoom: RoomState = {
             roomId: code,
             roomCode: code,
             createdAt: Date.now(),
-            hostId: uid,
+            hostId: 'host',
             currentTrack: initialTrack,
             isPlaying: false,
             positionSec: 0,
             lastSyncTimestamp: Date.now(),
             playbackRate: 1,
-            queue: CURATED_TRACKS_FALLBACK.slice(1, 4),
+            queue: [],
             users: [userObj],
           };
-
-          await setDoc(roomRef, {
-            ...newRoom,
-            reactions: [],
-            chatMessages: [],
-            updatedAt: Date.now(),
-          });
-
-          setRoom(newRoom);
+          setRoom(fallbackRoom);
         }
 
-        setCurrentUser(userObj);
-        setError(null);
-
-        // Attach Realtime Firestore Listener
+        // Attach Realtime Firestore Listener for cross-device instant sync
         if (firestoreUnsubRef.current) {
           firestoreUnsubRef.current();
         }
 
-        firestoreUnsubRef.current = onSnapshot(roomRef, (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setRoom({
-              roomId: data.roomId || code,
-              roomCode: data.roomCode || code,
-              createdAt: data.createdAt || Date.now(),
-              hostId: data.hostId || uid,
-              currentTrack: data.currentTrack || initialTrack,
-              isPlaying: Boolean(data.isPlaying),
-              positionSec: Number(data.positionSec) || 0,
-              lastSyncTimestamp: Number(data.lastSyncTimestamp) || Date.now(),
-              playbackRate: Number(data.playbackRate) || 1,
-              queue: data.queue || [],
-              users: data.users || [userObj],
-            });
+        firestoreUnsubRef.current = onSnapshot(
+          roomRef,
+          (docSnap) => {
+            if (docSnap.exists()) {
+              const data = docSnap.data();
 
-            if (Array.isArray(data.chatMessages)) {
-              setChatMessages(data.chatMessages);
+              setRoom((prev) => {
+                const rawUsers = data.users;
+                const usersList: UserInfo[] = Array.isArray(rawUsers) && rawUsers.length > 0
+                  ? rawUsers
+                  : rawUsers && typeof rawUsers === 'object'
+                  ? Object.values(rawUsers)
+                  : (prev?.users || [userObj]);
+
+                const baseTrack = data.currentTrack || prev?.currentTrack || initialTrack;
+                return {
+                  roomId: data.roomId || code,
+                  roomCode: data.roomCode || code,
+                  createdAt: data.createdAt || Date.now(),
+                  hostId: data.hostId || uid,
+                  currentTrack: baseTrack,
+                  isPlaying: Boolean(data.isPlaying),
+                  positionSec: typeof data.positionSec === 'number' ? data.positionSec : 0,
+                  lastSyncTimestamp: Number(data.lastSyncTimestamp) || Date.now(),
+                  playbackRate: Number(data.playbackRate) || 1,
+                  queue: Array.isArray(data.queue) ? data.queue : [],
+                  users: usersList,
+                };
+              });
+
+              if (Array.isArray(data.chatMessages)) {
+                setChatMessages(data.chatMessages);
+              }
             }
-          }
-        });
+          },
+          (err) => console.warn('Firestore listener snapshot error:', err)
+        );
       } catch (err: any) {
-        console.error('Firestore room join error:', err);
-        setError('Connected via Cloud sync. Ready to stream!');
+        console.warn('Firestore room sync note:', err);
       }
     },
     [safeSend]
   );
 
+  // Dual-channel Play
   const sendPlay = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'play', positionSec: pos });
-        return;
-      }
+      safeSend({ type: 'play', positionSec: pos });
 
-      // Firestore mode
+      // Always update Firestore doc so Phone gets it even if on cellular or background tab
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -393,15 +479,12 @@ export function useSyncSocket() {
     [safeSend]
   );
 
+  // Dual-channel Pause
   const sendPause = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'pause', positionSec: pos });
-        return;
-      }
+      safeSend({ type: 'pause', positionSec: pos });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -415,15 +498,12 @@ export function useSyncSocket() {
     [safeSend]
   );
 
+  // Dual-channel Seek
   const sendSeek = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'seek', positionSec: pos });
-        return;
-      }
+      safeSend({ type: 'seek', positionSec: pos });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -436,6 +516,7 @@ export function useSyncSocket() {
     [safeSend]
   );
 
+  // Dual-channel Change Track
   const sendChangeTrack = useCallback(
     (track: Track, autoPlay: boolean = true) => {
       if (!track) return;
@@ -450,12 +531,8 @@ export function useSyncSocket() {
         category: track.category ? String(track.category) : undefined,
       };
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay) });
-        return;
-      }
+      safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay) });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -474,6 +551,7 @@ export function useSyncSocket() {
     safeSend({ type: 'audio_unlocked' });
   }, [safeSend]);
 
+  // Dual-channel Add to Queue
   const sendAddQueue = useCallback(
     (track: Track) => {
       if (!track) return;
@@ -488,12 +566,8 @@ export function useSyncSocket() {
         category: track.category ? String(track.category) : undefined,
       };
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'add_queue', track: cleanTrack });
-        return;
-      }
+      safeSend({ type: 'add_queue', track: cleanTrack });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -505,15 +579,12 @@ export function useSyncSocket() {
     [safeSend]
   );
 
+  // Dual-channel Remove from Queue
   const sendRemoveQueue = useCallback(
     (index: number) => {
       const idx = typeof index === 'number' ? index : 0;
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'remove_queue', index: idx });
-        return;
-      }
+      safeSend({ type: 'remove_queue', index: idx });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code && room?.queue) {
         const nextQueue = [...room.queue];
@@ -527,6 +598,7 @@ export function useSyncSocket() {
     [safeSend, room]
   );
 
+  // Dual-channel Reaction
   const sendReaction = useCallback(
     (emoji: string) => {
       const cleanEmoji = String(emoji);
@@ -537,19 +609,17 @@ export function useSyncSocket() {
         x: Math.floor(Math.random() * 70) + 15,
       };
 
-      // Always show locally immediately for snappy feel
       setReactions((prev) => [...prev.slice(-20), newReaction]);
       setTimeout(() => {
         setReactions((prev) => prev.filter((r) => r.id !== newReaction.id));
       }, 3000);
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'send_reaction', emoji: cleanEmoji });
-      }
+      safeSend({ type: 'send_reaction', emoji: cleanEmoji });
     },
     [safeSend]
   );
 
+  // Dual-channel Chat
   const sendChat = useCallback(
     (text: string) => {
       if (typeof text !== 'string' || !text.trim()) return;
@@ -563,12 +633,8 @@ export function useSyncSocket() {
         timestamp: Date.now(),
       };
 
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        safeSend({ type: 'send_chat', text: cleanText });
-        return;
-      }
+      safeSend({ type: 'send_chat', text: cleanText });
 
-      // Firestore mode
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -580,13 +646,10 @@ export function useSyncSocket() {
     [safeSend]
   );
 
+  // Dual-channel Next Track
   const sendNextTrack = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      safeSend({ type: 'next_track' });
-      return;
-    }
+    safeSend({ type: 'next_track' });
 
-    // Firestore mode
     const code = currentRoomCodeRef.current;
     if (code && room && room.queue.length > 0) {
       const nextTrack = room.queue[0];
@@ -603,12 +666,8 @@ export function useSyncSocket() {
   }, [safeSend, room]);
 
   const sendTrackEnded = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      safeSend({ type: 'track_ended' });
-      return;
-    }
     sendNextTrack();
-  }, [safeSend, sendNextTrack]);
+  }, [sendNextTrack]);
 
   // Precise current position calculator
   const getAuthoritativeTime = useCallback(() => {

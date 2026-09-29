@@ -1,7 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { Disc3, QrCode, Play, Radio, ArrowRight, Sparkles, Music2, Headphones, Users2, ShieldCheck, Heart, CloudCheck } from 'lucide-react';
+import {
+  Disc3,
+  QrCode,
+  Sparkles,
+  Headphones,
+  Users2,
+  Heart,
+  Loader2,
+  AlertCircle,
+  LogIn,
+} from 'lucide-react';
 import { CoupleModal, getStoredCoupleProfile } from './CoupleModal';
+import { AuthModal } from './AuthModal';
 import { User } from 'firebase/auth';
+import { AuthErrorInfo } from '../hooks/useFirebaseAuth';
 
 interface JoinScreenProps {
   onJoin: (params: {
@@ -13,8 +25,12 @@ interface JoinScreenProps {
   initialRoomCode?: string;
   error?: string | null;
   authUser?: User | null;
-  onLogin?: () => void;
-  onLogout?: () => void;
+  isAuthenticating?: boolean;
+  authError?: AuthErrorInfo | null;
+  onLogin?: () => Promise<any>;
+  onLoginRedirect?: () => Promise<any>;
+  onLogout?: () => Promise<any>;
+  onClearAuthError?: () => void;
 }
 
 const AVATARS = ['🎧', '🎸', '🎹', '🎤', '🎷', '🕺', '💃', '⚡', '🔥', '✨', '💖', '💑'];
@@ -24,16 +40,22 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
   initialRoomCode,
   error,
   authUser,
+  isAuthenticating = false,
+  authError = null,
   onLogin,
+  onLoginRedirect,
   onLogout,
+  onClearAuthError,
 }) => {
   const [mode, setMode] = useState<'options' | 'join_code'>('options');
   const [userName, setUserName] = useState(authUser?.displayName || '');
   const [roomCode, setRoomCode] = useState(initialRoomCode || '');
   const [selectedAvatar, setSelectedAvatar] = useState(AVATARS[0]);
-  const [isChecking, setIsChecking] = useState(false);
+  const [isHosting, setIsHosting] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isCoupleModalOpen, setIsCoupleModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const coupleProfile = getStoredCoupleProfile();
 
   useEffect(() => {
@@ -49,15 +71,45 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
     }
   }, [initialRoomCode]);
 
+  // Reset loading states on incoming error
+  useEffect(() => {
+    if (error) {
+      setIsHosting(false);
+      setIsJoining(false);
+    }
+  }, [error]);
+
+  // Safety timer to prevent button being permanently disabled
+  useEffect(() => {
+    if (isHosting || isJoining) {
+      const timer = setTimeout(() => {
+        setIsHosting(false);
+        setIsJoining(false);
+      }, 8000);
+      return () => clearTimeout(timer);
+    }
+  }, [isHosting, isJoining]);
+
+  // Host Jam with instant feedback and clean unique room code
   const handleStartHost = () => {
+    setIsHosting(true);
+    setValidationError(null);
+
+    const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    let code = '';
+    for (let i = 0; i < 4; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+
     onJoin({
+      roomCode: code,
       userName: userName.trim() || 'Host DJ',
       role: 'host',
       avatar: selectedAvatar,
     });
   };
 
-  const handleJoinWithCode = async (e: React.FormEvent) => {
+  const handleJoinWithCode = (e: React.FormEvent) => {
     e.preventDefault();
     setValidationError(null);
     const code = roomCode.trim().toUpperCase();
@@ -67,33 +119,13 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
       return;
     }
 
-    setIsChecking(true);
-    try {
-      // Validate room existence via API
-      const res = await fetch(`/api/rooms/check/${encodeURIComponent(code)}`);
-      if (!res.ok) {
-        setValidationError('Room not found. Please verify the code or scan the QR code again.');
-        setIsChecking(false);
-        return;
-      }
-
-      onJoin({
-        roomCode: code,
-        userName: userName.trim() || 'Music Lover',
-        role: 'listener',
-        avatar: selectedAvatar,
-      });
-    } catch (err) {
-      // If network fails, still attempt join through socket
-      onJoin({
-        roomCode: code,
-        userName: userName.trim() || 'Music Lover',
-        role: 'listener',
-        avatar: selectedAvatar,
-      });
-    } finally {
-      setIsChecking(false);
-    }
+    setIsJoining(true);
+    onJoin({
+      roomCode: code,
+      userName: userName.trim() || 'Music Lover',
+      role: 'listener',
+      avatar: selectedAvatar,
+    });
   };
 
   return (
@@ -118,10 +150,15 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
           </div>
         </div>
 
-        {/* Right Corner: Google Account Login for Lifetime Playlist Persistence */}
+        {/* Right Corner: Account Modal Trigger */}
         <div className="flex items-center gap-3">
           {authUser ? (
-            <div className="flex items-center gap-2.5 bg-zinc-900/90 border border-emerald-500/30 rounded-2xl p-1.5 pr-3 shadow-md">
+            <button
+              type="button"
+              onClick={() => setIsAuthModalOpen(true)}
+              className="flex items-center gap-2.5 bg-zinc-900/90 hover:bg-zinc-800 border border-emerald-500/30 rounded-2xl p-1.5 pr-3 shadow-md transition active:scale-95 text-left"
+              title="View account details"
+            >
               {authUser.photoURL ? (
                 <img
                   src={authUser.photoURL}
@@ -139,24 +176,14 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
                 </p>
                 <p className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  Cloud Saved
+                  Cloud Synced
                 </p>
               </div>
-              {onLogout && (
-                <button
-                  type="button"
-                  onClick={onLogout}
-                  className="text-[11px] text-zinc-400 hover:text-rose-400 px-2 py-1 rounded-lg hover:bg-zinc-800 transition font-semibold ml-1"
-                  title="Sign out of account"
-                >
-                  Logout
-                </button>
-              )}
-            </div>
+            </button>
           ) : (
             <button
               type="button"
-              onClick={onLogin}
+              onClick={() => setIsAuthModalOpen(true)}
               className="px-3.5 py-2 bg-white hover:bg-zinc-100 text-black font-extrabold text-xs rounded-xl shadow-lg transition flex items-center gap-2 active:scale-95 border border-zinc-200"
               title="Sign in with Google to save playlists forever"
             >
@@ -248,17 +275,18 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
 
             {/* Errors */}
             {(error || validationError) && (
-              <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/50 text-xs text-rose-300">
-                {error || validationError}
+              <div className="p-2.5 rounded-xl bg-rose-950/40 border border-rose-800/50 text-xs text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                <span>{error || validationError}</span>
               </div>
             )}
 
-            {/* If initial room code is found */}
+            {/* If initial room code is found in URL */}
             {initialRoomCode && (
               <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-xl flex items-center gap-3">
                 <QrCode className="w-6 h-6 text-emerald-400 shrink-0" />
                 <div className="text-xs">
-                  <p className="font-bold text-white">QR Code Scanned!</p>
+                  <p className="font-bold text-white">QR Code / Link Detected!</p>
                   <p className="text-zinc-400">
                     Ready to join Room: <strong className="text-emerald-400">{initialRoomCode}</strong>
                   </p>
@@ -273,10 +301,20 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
                 <button
                   type="button"
                   onClick={handleStartHost}
-                  className="w-full py-3.5 px-5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-black font-extrabold rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition active:scale-[0.98]"
+                  disabled={isHosting}
+                  className="w-full py-3.5 px-5 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:opacity-75 text-black font-extrabold rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition active:scale-[0.98]"
                 >
-                  <Headphones className="w-4 h-4" />
-                  <span>Host a Live Jam</span>
+                  {isHosting ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-black" />
+                      <span>Starting Live Jam...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Headphones className="w-4 h-4" />
+                      <span>Host a Live Jam</span>
+                    </>
+                  )}
                 </button>
 
                 {/* Button 2: Join with Code / QR */}
@@ -313,74 +351,79 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
                       setMode('options');
                       setValidationError(null);
                     }}
-                    className="py-3 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-bold rounded-xl transition"
+                    className="flex-1 py-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-bold rounded-xl text-sm transition"
                   >
                     Back
                   </button>
-
                   <button
                     type="submit"
-                    disabled={isChecking}
-                    className="flex-1 py-3 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-black font-extrabold rounded-xl text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition active:scale-[0.98]"
+                    disabled={isJoining || !roomCode.trim()}
+                    className="flex-1 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 disabled:opacity-50 text-black font-extrabold rounded-xl text-sm flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/20 transition active:scale-[0.98]"
                   >
-                    {isChecking ? (
-                      <span>Connecting...</span>
+                    {isJoining ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin text-black" />
+                        <span>Connecting...</span>
+                      </>
                     ) : (
                       <>
-                        <span>Join Jam Now</span>
-                        <ArrowRight className="w-4 h-4" />
+                        <span>Join Jam</span>
+                        <Users2 className="w-4 h-4" />
                       </>
                     )}
                   </button>
                 </div>
               </form>
             )}
-          </div>
 
-          {/* Couples & Partners Love Connection Mode Card */}
-          <div className="bg-gradient-to-r from-pink-950/40 via-zinc-900/90 to-rose-950/40 border border-pink-500/30 rounded-2xl p-4 shadow-xl backdrop-blur-md flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-pink-500 to-rose-500 flex items-center justify-center text-white shrink-0 shadow-lg shadow-pink-500/20">
-                <Heart className="w-5 h-5 fill-current" />
-              </div>
-              <div>
-                <h4 className="text-xs font-bold text-white flex items-center justify-center sm:justify-start gap-1.5">
-                  Two Hearts Jam (Couples & Partners) <Sparkles className="w-3.5 h-3.5 text-pink-400" />
-                </h4>
-                <p className="text-[11px] text-zinc-400">
-                  {coupleProfile?.isLinked
-                    ? `Linked with ${coupleProfile.partnerName || 'Partner'} ❤️ Direct WhatsApp notifications`
-                    : 'Create a private couple link to listen live and send sweet WhatsApp song alerts!'}
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setIsCoupleModalOpen(true)}
-              className="px-4 py-2 bg-gradient-to-r from-pink-500 to-rose-500 hover:from-pink-400 hover:to-rose-400 text-black font-extrabold text-xs rounded-xl shadow-md transition active:scale-95 shrink-0"
-            >
-              {coupleProfile ? 'Couple Hub 💖' : 'Couple Setup 💖'}
-            </button>
-          </div>
-
-          {/* Quick Features List */}
-          <div className="grid grid-cols-3 gap-2 text-center text-[11px] text-zinc-400">
-            <div className="p-2.5 rounded-xl bg-zinc-900/40 border border-zinc-800/50">
-              <span className="block text-emerald-400 font-bold mb-0.5">1-Scan QR</span>
-              <span>Direct Join</span>
-            </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/40 border border-zinc-800/50">
-              <span className="block text-emerald-400 font-bold mb-0.5">Sub-Second</span>
-              <span>Audio Sync</span>
-            </div>
-            <div className="p-2.5 rounded-xl bg-zinc-900/40 border border-zinc-800/50">
-              <span className="block text-emerald-400 font-bold mb-0.5">Any Song</span>
-              <span>YouTube & Web</span>
+            {/* Quick Couple Hub Card */}
+            <div className="pt-2 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => setIsCoupleModalOpen(true)}
+                className="w-full p-2.5 bg-pink-950/40 hover:bg-pink-900/40 border border-pink-500/30 rounded-xl flex items-center justify-between text-left transition group active:scale-98"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-pink-500/20 text-pink-400 flex items-center justify-center group-hover:scale-110 transition">
+                    <Heart className="w-4 h-4 fill-current text-pink-400" />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-white flex items-center gap-1">
+                      Couples Hub
+                      {coupleProfile?.isLinked && (
+                        <span className="text-[9px] px-1.5 py-0.2 bg-emerald-500/20 text-emerald-400 rounded-full font-semibold">
+                          Linked
+                        </span>
+                      )}
+                    </p>
+                    <p className="text-[10px] text-pink-300/80">
+                      {coupleProfile?.isLinked
+                        ? `Connected with ${coupleProfile.partnerName || 'Partner'} 💕`
+                        : 'Connect with partner & play romantic tracks'}
+                    </p>
+                  </div>
+                </div>
+                <span className="text-[11px] font-bold text-pink-400 group-hover:translate-x-0.5 transition">
+                  Open &rarr;
+                </span>
+              </button>
             </div>
           </div>
         </div>
       </main>
+
+      {/* Account & Google Login Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        user={authUser || null}
+        isAuthenticating={isAuthenticating}
+        authError={authError}
+        onLoginGoogle={onLogin || (async () => {})}
+        onLoginRedirect={onLoginRedirect || (async () => {})}
+        onLogout={onLogout || (async () => {})}
+        onClearError={onClearAuthError || (() => {})}
+      />
 
       {/* Couple Link Modal */}
       <CoupleModal
@@ -399,7 +442,7 @@ export const JoinScreen: React.FC<JoinScreenProps> = ({
           });
         }}
         authUser={authUser}
-        onLogin={onLogin}
+        onLogin={() => setIsAuthModalOpen(true)}
       />
 
       {/* Footer */}

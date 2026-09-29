@@ -74,9 +74,41 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const currentTrack = room.currentTrack;
   const isPlaying = room.isPlaying;
 
+  const currentTrackRef = useRef<Track>(currentTrack);
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ytPlayerRef = useRef<any>(null);
   const ytContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // Absolute silencing helpers to guarantee ZERO audio overlap/mixing
+  const stopAndSilenceYouTube = useCallback(() => {
+    if (ytPlayerRef.current) {
+      try {
+        if (typeof ytPlayerRef.current.stopVideo === 'function') ytPlayerRef.current.stopVideo();
+        if (typeof ytPlayerRef.current.pauseVideo === 'function') ytPlayerRef.current.pauseVideo();
+        if (typeof ytPlayerRef.current.mute === 'function') ytPlayerRef.current.mute();
+        if (typeof ytPlayerRef.current.destroy === 'function') ytPlayerRef.current.destroy();
+      } catch (e) {}
+      ytPlayerRef.current = null;
+    }
+    if (ytContainerRef.current) {
+      ytContainerRef.current.innerHTML = '';
+    }
+  }, []);
+
+  const stopAndSilenceAudio = useCallback(() => {
+    if (audioRef.current) {
+      try {
+        audioRef.current.pause();
+        audioRef.current.currentTime = 0;
+        audioRef.current.removeAttribute('src');
+        audioRef.current.load();
+      } catch (e) {}
+    }
+  }, []);
 
   const [isYtReady, setIsYtReady] = useState(false);
   const [volume, setVolume] = useState<number>(0.9);
@@ -130,7 +162,16 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
   // Initialize or update YouTube Player
   useEffect(() => {
-    if (!isYtReady || currentTrack.source !== 'youtube' || !ytContainerRef.current) return;
+    // If current track is NOT YouTube, immediately and completely destroy/silence YouTube player
+    if (currentTrack.source !== 'youtube') {
+      stopAndSilenceYouTube();
+      return;
+    }
+
+    if (!isYtReady || !ytContainerRef.current) return;
+
+    // Strict mutual exclusion: Ensure direct HTML5 audio is silenced and unloaded
+    stopAndSilenceAudio();
 
     const initialPos = getAuthoritativeTime();
 
@@ -181,14 +222,24 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         },
         events: {
           onReady: (event: any) => {
-            if (destroyed) return;
+            if (destroyed || currentTrackRef.current.source !== 'youtube') {
+              try {
+                event.target.stopVideo();
+                event.target.pauseVideo();
+                event.target.mute();
+                event.target.destroy();
+              } catch (e) {}
+              ytPlayerRef.current = null;
+              if (ytContainerRef.current) ytContainerRef.current.innerHTML = '';
+              return;
+            }
             ytPlayerRef.current = event.target;
             event.target.setVolume(isMuted ? 0 : volume * 100);
 
             const dur = event.target.getDuration();
             if (dur && dur > 0) setDurationSec(dur);
 
-            if (isPlaying) {
+            if (isPlaying && currentTrackRef.current.source === 'youtube') {
               event.target.playVideo();
               setTimeout(() => {
                 const state = event.target.getPlayerState();
@@ -200,6 +251,14 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           },
           onStateChange: (event: any) => {
             if (destroyed) return;
+            if (currentTrackRef.current.source !== 'youtube') {
+              try {
+                event.target.stopVideo();
+                event.target.pauseVideo();
+                event.target.mute();
+              } catch (e) {}
+              return;
+            }
             // 1 = PLAYING, 2 = PAUSED, 0 = ENDED
             if (event.data === 1) {
               setNeedsUserGesture(false);
@@ -228,23 +287,26 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     return () => {
       destroyed = true;
     };
-  }, [isYtReady, currentTrack.urlOrVideoId, currentTrack.source]);
+  }, [isYtReady, currentTrack.urlOrVideoId, currentTrack.source, stopAndSilenceYouTube, stopAndSilenceAudio]);
 
   // Cleanup YouTube player strictly on unmount
   useEffect(() => {
     return () => {
-      if (ytPlayerRef.current) {
-        try {
-          ytPlayerRef.current.destroy();
-        } catch (e) {}
-        ytPlayerRef.current = null;
-      }
+      stopAndSilenceYouTube();
+      stopAndSilenceAudio();
     };
-  }, []);
+  }, [stopAndSilenceYouTube, stopAndSilenceAudio]);
 
   // Handle direct audio source (HTML5 Audio)
   useEffect(() => {
-    if (currentTrack.source !== 'audio' || !audioRef.current) return;
+    // If not audio, make sure the HTML5 element is paused and emptied
+    if (currentTrack.source !== 'audio' || !audioRef.current) {
+      stopAndSilenceAudio();
+      return;
+    }
+
+    // Crucial: When playing audio, completely silence and stop any YouTube instance!
+    stopAndSilenceYouTube();
 
     const audio = audioRef.current;
     audio.src = currentTrack.urlOrVideoId;
@@ -279,7 +341,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     } else {
       audio.pause();
     }
-  }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source]);
+  }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source, stopAndSilenceYouTube, stopAndSilenceAudio]);
 
   // =========================================================================
   // ENHANCED REAL-TIME DRIFT-CORRECTION & LATENCY SYNCHRONIZATION ENGINE
@@ -296,33 +358,47 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
       let currentLocalTime = 0;
 
-      // 1. Read position from active media player
-      if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
-        try {
-          if (typeof ytPlayerRef.current.getCurrentTime === 'function') {
-            currentLocalTime = ytPlayerRef.current.getCurrentTime() || 0;
-            const dur = ytPlayerRef.current.getDuration();
-            if (dur && dur > 0) setDurationSec(dur);
-
-            // Sync play/pause state
-            const ytState = ytPlayerRef.current.getPlayerState();
-            if (isPlaying && ytState !== 1 && ytState !== 3) {
-              ytPlayerRef.current.playVideo();
-            } else if (!isPlaying && ytState === 1) {
-              ytPlayerRef.current.pauseVideo();
-            }
-          }
-        } catch (e) {
-          // ignore
+      // 1. Read position from active media player & enforce mutual exclusion
+      if (currentTrack.source === 'youtube') {
+        // Guarantee HTML5 audio is stopped and unloaded so it never mixes
+        if (audioRef.current && (audioRef.current.src || !audioRef.current.paused)) {
+          stopAndSilenceAudio();
         }
-      } else if (currentTrack.source === 'audio' && audioRef.current) {
-        currentLocalTime = audioRef.current.currentTime || 0;
-        if (audioRef.current.duration) setDurationSec(audioRef.current.duration);
 
-        if (isPlaying && audioRef.current.paused) {
-          audioRef.current.play().catch(() => setNeedsUserGesture(true));
-        } else if (!isPlaying && !audioRef.current.paused) {
-          audioRef.current.pause();
+        if (ytPlayerRef.current) {
+          try {
+            if (typeof ytPlayerRef.current.getCurrentTime === 'function') {
+              currentLocalTime = ytPlayerRef.current.getCurrentTime() || 0;
+              const dur = ytPlayerRef.current.getDuration();
+              if (dur && dur > 0) setDurationSec(dur);
+
+              // Sync play/pause state
+              const ytState = ytPlayerRef.current.getPlayerState();
+              if (isPlaying && ytState !== 1 && ytState !== 3) {
+                ytPlayerRef.current.playVideo();
+              } else if (!isPlaying && ytState === 1) {
+                ytPlayerRef.current.pauseVideo();
+              }
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+      } else if (currentTrack.source === 'audio') {
+        // Guarantee YouTube player is completely silenced so it never mixes
+        if (ytPlayerRef.current) {
+          stopAndSilenceYouTube();
+        }
+
+        if (audioRef.current) {
+          currentLocalTime = audioRef.current.currentTime || 0;
+          if (audioRef.current.duration) setDurationSec(audioRef.current.duration);
+
+          if (isPlaying && audioRef.current.paused) {
+            audioRef.current.play().catch(() => setNeedsUserGesture(true));
+          } else if (!isPlaying && !audioRef.current.paused) {
+            audioRef.current.pause();
+          }
         }
       }
 
@@ -534,16 +610,22 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
     const targetPos = getAuthoritativeTime();
 
-    if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
-      try {
-        ytPlayerRef.current.unMute();
-        ytPlayerRef.current.setVolume(volume * 100);
-        ytPlayerRef.current.seekTo(targetPos, true);
-        ytPlayerRef.current.playVideo();
-      } catch (e) {}
-    } else if (currentTrack.source === 'audio' && audioRef.current) {
-      audioRef.current.currentTime = targetPos;
-      audioRef.current.play().catch(console.error);
+    if (currentTrack.source === 'youtube') {
+      stopAndSilenceAudio();
+      if (ytPlayerRef.current) {
+        try {
+          ytPlayerRef.current.unMute();
+          ytPlayerRef.current.setVolume(volume * 100);
+          ytPlayerRef.current.seekTo(targetPos, true);
+          ytPlayerRef.current.playVideo();
+        } catch (e) {}
+      }
+    } else if (currentTrack.source === 'audio') {
+      stopAndSilenceYouTube();
+      if (audioRef.current) {
+        audioRef.current.currentTime = targetPos;
+        audioRef.current.play().catch(console.error);
+      }
     }
   };
 
@@ -575,19 +657,25 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
     setSyncStatus('syncing');
 
-    if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
-      try {
-        ytPlayerRef.current.seekTo(target, true);
-        if (typeof ytPlayerRef.current.setPlaybackRate === 'function') {
-          ytPlayerRef.current.setPlaybackRate(1.0);
-        }
-        if (isPlaying) ytPlayerRef.current.playVideo();
-      } catch (e) {}
-    } else if (currentTrack.source === 'audio' && audioRef.current) {
-      audioRef.current.currentTime = target;
-      audioRef.current.preservesPitch = true;
-      audioRef.current.playbackRate = 1.0;
-      if (isPlaying) audioRef.current.play().catch(console.error);
+    if (currentTrack.source === 'youtube') {
+      stopAndSilenceAudio();
+      if (ytPlayerRef.current) {
+        try {
+          ytPlayerRef.current.seekTo(target, true);
+          if (typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+            ytPlayerRef.current.setPlaybackRate(1.0);
+          }
+          if (isPlaying) ytPlayerRef.current.playVideo();
+        } catch (e) {}
+      }
+    } else if (currentTrack.source === 'audio') {
+      stopAndSilenceYouTube();
+      if (audioRef.current) {
+        audioRef.current.currentTime = target;
+        audioRef.current.preservesPitch = true;
+        audioRef.current.playbackRate = 1.0;
+        if (isPlaying) audioRef.current.play().catch(console.error);
+      }
     }
 
     smoothedDriftRef.current = 0;
@@ -601,6 +689,46 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     setCalibrationNotice(`Calibrated & Locked! (Ping: ${freshLatency}ms • Drift: 0ms)`);
     setTimeout(() => setCalibrationNotice(null), 3000);
   };
+
+  // Mobile Phone First-Touch Audio Context Unlocker
+  useEffect(() => {
+    const handleFirstTouch = () => {
+      if (currentTrackRef.current.source === 'audio') {
+        stopAndSilenceYouTube();
+        if (audioRef.current && audioRef.current.paused && isPlaying) {
+          audioRef.current.play().catch(() => {});
+        }
+      } else if (currentTrackRef.current.source === 'youtube') {
+        stopAndSilenceAudio();
+        if (ytPlayerRef.current && typeof ytPlayerRef.current.playVideo === 'function' && isPlaying) {
+          try {
+            ytPlayerRef.current.playVideo();
+          } catch (e) {}
+        }
+      }
+      setNeedsUserGesture(false);
+      onAudioUnlocked();
+    };
+
+    window.addEventListener('touchstart', handleFirstTouch, { once: true, passive: true });
+    window.addEventListener('click', handleFirstTouch, { once: true, passive: true });
+
+    return () => {
+      window.removeEventListener('touchstart', handleFirstTouch);
+      window.removeEventListener('click', handleFirstTouch);
+    };
+  }, [isPlaying, onAudioUnlocked, stopAndSilenceYouTube, stopAndSilenceAudio]);
+
+  // Handle phone screen wake-up / tab visibility changes
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && isPlaying) {
+        handleResync();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isPlaying]);
 
   const formatTime = (seconds: number) => {
     const s = Math.max(0, Math.floor(seconds));

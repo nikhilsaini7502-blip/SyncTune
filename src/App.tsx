@@ -10,6 +10,7 @@ import { MembersAndChatModal } from './components/MembersAndChatModal';
 import { ReactionsOverlay } from './components/ReactionsOverlay';
 import { AmbienceOverlay } from './components/AmbienceOverlay';
 import { CoupleModal } from './components/CoupleModal';
+import { AuthModal } from './components/AuthModal';
 import { CURATED_TRACKS_FALLBACK } from './curatedTracks';
 import { Track, AmbienceConfig } from './types';
 import { QrCode, Sparkles, Share2, Music, Users, Radio, Heart } from 'lucide-react';
@@ -18,8 +19,12 @@ export default function App() {
   const {
     user: authUser,
     cloudPlaylists,
+    isAuthenticating,
+    authError,
     loginWithGoogle,
+    loginWithGoogleRedirect,
     logout,
+    clearAuthError,
     savePlaylistToCloud,
     deletePlaylistFromCloud,
   } = useFirebaseAuth();
@@ -55,6 +60,7 @@ export default function App() {
   const [isMembersModalOpen, setIsMembersModalOpen] = useState(false);
   const [isAmbienceOpen, setIsAmbienceOpen] = useState(false);
   const [isCoupleOpen, setIsCoupleOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [ambienceConfig, setAmbienceConfig] = useState<AmbienceConfig>({
     theme: 'off',
     sound: 'none',
@@ -74,12 +80,18 @@ export default function App() {
     }
   }, []);
 
-  // Fetch curated tracks library from server or retain fallback
+  // Fetch curated tracks library from server or retain fallback safely
   useEffect(() => {
     fetch('/api/curated-tracks')
-      .then((res) => res.json())
+      .then((res) => {
+        const contentType = res.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          return null;
+        }
+        return res.json();
+      })
       .then((data) => {
-        if (data.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
+        if (data?.tracks && Array.isArray(data.tracks) && data.tracks.length > 0) {
           setCuratedTracks(data.tracks);
         }
       })
@@ -130,8 +142,12 @@ export default function App() {
         initialRoomCode={initialRoomCode}
         error={error}
         authUser={authUser}
+        isAuthenticating={isAuthenticating}
+        authError={authError}
         onLogin={loginWithGoogle}
+        onLoginRedirect={loginWithGoogleRedirect}
         onLogout={logout}
+        onClearAuthError={clearAuthError}
       />
     );
   }
@@ -148,6 +164,8 @@ export default function App() {
         onOpenQR={() => setIsQRModalOpen(true)}
         onOpenMembers={() => setIsMembersModalOpen(true)}
         onLeaveRoom={handleLeaveRoom}
+        authUser={authUser}
+        onOpenAuth={() => setIsAuthModalOpen(true)}
       />
 
       {/* Main Party Room Content */}
@@ -213,7 +231,7 @@ export default function App() {
           onAddToQueue={(track) => sendAddQueue(track)}
           onRemoveFromQueue={(idx) => sendRemoveQueue(idx)}
           authUser={authUser}
-          onLogin={loginWithGoogle}
+          onLogin={() => setIsAuthModalOpen(true)}
           cloudPlaylists={cloudPlaylists}
           onSavePlaylistToCloud={savePlaylistToCloud}
           onDeletePlaylistFromCloud={deletePlaylistFromCloud}
@@ -280,7 +298,20 @@ export default function App() {
           setAmbienceConfig((prev) => ({ ...prev, theme: 'romantic', intensity: 'vibrant' }));
         }}
         authUser={authUser}
-        onLogin={loginWithGoogle}
+        onLogin={() => setIsAuthModalOpen(true)}
+      />
+
+      {/* Account & Google Login Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        user={authUser || null}
+        isAuthenticating={isAuthenticating}
+        authError={authError}
+        onLoginGoogle={loginWithGoogle}
+        onLoginRedirect={loginWithGoogleRedirect}
+        onLogout={logout}
+        onClearError={clearAuthError}
       />
 
       {/* Quick Access Floating Glow Chip */}
