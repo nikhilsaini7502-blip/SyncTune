@@ -53,16 +53,28 @@ export function useSyncSocket() {
     isHostRef.current = currentUser?.role === 'host' || (room ? room.hostId === currentUser?.id : false);
   }, [currentUser, room]);
 
-  // Update internal sync reference snapshot
+  // Update internal sync reference snapshot with absolute wall-clock timestamp
   const updateSyncSnapshot = useCallback(
     (pos: number, isPlaying: boolean, rate: number = 1.0, hostTimestamp?: number) => {
       const safePos = typeof pos === 'number' && !isNaN(pos) && pos >= 0 ? pos : 0;
+      const hostEpoch = typeof hostTimestamp === 'number' && hostTimestamp > 0 ? hostTimestamp : Date.now();
+      const nowMasterEpoch = Date.now() + clockOffsetRef.current;
+
+      // Calculate elapsed seconds between when the host/server recorded pos and right now
+      const timeDiffMs = nowMasterEpoch - hostEpoch;
+      const elapsedSinceRecordSec = isPlaying && timeDiffMs > 0 && timeDiffMs < 3600000
+        ? timeDiffMs / 1000
+        : 0;
+
+      // Base extrapolated position at this exact local receipt instant
+      const extrapolatedBasePos = safePos + elapsedSinceRecordSec * (Number(rate) || 1.0);
+
       syncSnapshotRef.current = {
-        positionSec: safePos,
+        positionSec: extrapolatedBasePos,
         isPlaying: Boolean(isPlaying),
         playbackRate: Number(rate) || 1.0,
         localReceivePerfMs: performance.now(),
-        hostTimestampMs: hostTimestamp || Date.now(),
+        hostTimestampMs: hostEpoch,
         lastUpdateEpochMs: Date.now(),
       };
     },
@@ -781,16 +793,15 @@ export function useSyncSocket() {
       return snap.positionSec;
     }
 
-    // High precision monotonic elapsed delta using performance.now()
+    // High precision monotonic progression from the snapshot
     const elapsedSec = Math.max(0, (performance.now() - snap.localReceivePerfMs) / 1000);
-    const oneWayLatencySec = Math.max(0, (latencyMs || 20) / 2000);
-    const calculated = snap.positionSec + (elapsedSec + oneWayLatencySec) * (snap.playbackRate || 1.0);
+    const calculated = snap.positionSec + elapsedSec * (snap.playbackRate || 1.0);
 
     if (room?.currentTrack?.durationSec && calculated > room.currentTrack.durationSec) {
       return room.currentTrack.durationSec;
     }
     return Math.max(0, calculated);
-  }, [room?.currentTrack?.durationSec, latencyMs]);
+  }, [room?.currentTrack?.durationSec]);
 
   return {
     isConnected,

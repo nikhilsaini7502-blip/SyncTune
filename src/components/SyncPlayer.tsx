@@ -317,10 +317,34 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     const audio = audioRef.current;
     audio.src = currentTrack.urlOrVideoId;
     audio.volume = isMuted ? 0 : volume;
-    audio.preservesPitch = true; // Crucial for pitch-preserved smooth drift adjustment
+    audio.preservesPitch = true;
 
-    const initialPos = getAuthoritativeTime();
-    audio.currentTime = initialPos;
+    // Guaranteed initial align on metadata ready
+    const handleAudioReady = () => {
+      const targetPos = getAuthoritativeTime();
+      if (typeof audio.duration === 'number' && audio.duration > 0) {
+        setDurationSec(audio.duration);
+      }
+      if (Math.abs(audio.currentTime - targetPos) > 0.05) {
+        audio.currentTime = targetPos;
+      }
+      if (isPlaying) {
+        audio
+          .play()
+          .then(() => {
+            setNeedsUserGesture(false);
+            setSyncStatus('locked');
+          })
+          .catch(() => {
+            if (!isHost) {
+              setNeedsUserGesture(true);
+            }
+          });
+      }
+    };
+
+    audio.addEventListener('loadedmetadata', handleAudioReady, { once: true });
+    audio.addEventListener('canplay', handleAudioReady, { once: true });
 
     audio.onended = () => {
       setSyncStatus('paused');
@@ -366,13 +390,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      const rawTargetTime = getAuthoritativeTime();
-
-      // Acoustic latency compensation for listeners:
-      // Incorporates one-way network transit delay and client audio output buffer
-      const networkDelaySec = Math.max(0, (latencyMs || 24) / 1000);
-      const latencyCompSec = !isHost ? networkDelaySec * 0.5 : 0;
-      const targetTime = rawTargetTime + latencyCompSec;
+      const targetTime = getAuthoritativeTime();
 
       let currentLocalTime = 0;
 
@@ -482,8 +500,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       // Steers playbackRate smoothly without buffer flushes or audible jumping
       // =======================================================================
       if (currentTrack.source === 'audio' && audioRef.current) {
-        // TIER 0: PERFECT QUANTUM LOCK (< 15ms)
-        if (absDriftSec <= 0.015) {
+        // TIER 0: PERFECT QUANTUM LOCK (< 20ms)
+        if (absDriftSec <= 0.02) {
           setDriftTier('locked');
           setSyncStatus('locked');
           setActivePlaybackRate(1.0);
@@ -492,24 +510,22 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             audioRef.current.playbackRate = 1.0;
           }
         }
-        // TIER 1: CONTINUOUS PID SPEED CONVERGENCE (15ms to 2800ms)
-        // Adjusts speed smoothly in proportion to drift without buffer purging or pitch distortion
-        else if (absDriftSec > 0.015 && absDriftSec <= 2.8) {
+        // TIER 1: CONTINUOUS PID SPEED CONVERGENCE (20ms to 350ms)
+        // Adjusts speed smoothly in proportion to drift without audible pitch distortion
+        else if (absDriftSec > 0.02 && absDriftSec <= 0.35) {
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
           setSyncStatus('locked');
 
-          // Smooth PID steering: delta proportional to drift
-          // drift < 0 (lagging behind) => rate > 1.0 (e.g. 1.025 to catch up)
-          // drift > 0 (ahead) => rate < 1.0 (e.g. 0.975 to slow down)
-          const proportionalDelta = -driftSec * 0.28;
-          const clampedDelta = Math.max(-0.065, Math.min(0.065, proportionalDelta));
+          const proportionalDelta = -driftSec * 0.35;
+          const clampedDelta = Math.max(-0.075, Math.min(0.075, proportionalDelta));
           const targetRate = parseFloat((1.0 + clampedDelta).toFixed(4));
 
           setActivePlaybackRate(targetRate);
           audioRef.current.preservesPitch = true;
           audioRef.current.playbackRate = targetRate;
         }
-        // TIER 2: HARD TIME JUMP (> 2.8s jump / manual host seek)
+        // TIER 2: INSTANT SNAP SEEK (> 350ms initial join / large drift)
+        // Instantly closes 1s lag in 1 frame (0.00s) instead of dragging behind!
         else {
           setDriftTier('snap');
           audioRef.current.currentTime = targetTime;
@@ -522,8 +538,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       // FOR YOUTUBE PLAYER: ANTI-BUFFERING SPEED SLEW & COOLDOWN SEEK
       // =======================================================================
       else if (currentTrack.source === 'youtube') {
-        // TIER 0: LOCK ZONE (< 200ms) - Imperceptible to human ear on video stream
-        if (absDriftSec <= 0.20) {
+        // TIER 0: LOCK ZONE (< 150ms)
+        if (absDriftSec <= 0.15) {
           consecutiveDriftTicksRef.current = 0;
           setDriftTier('locked');
           setSyncStatus('locked');
@@ -534,11 +550,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
         }
-        // TIER 1: SOFT SPEED CONVERGENCE (200ms to 1000ms)
-        else if (absDriftSec > 0.20 && absDriftSec <= 1.0) {
+        // TIER 1: SOFT SPEED CONVERGENCE (150ms to 750ms)
+        else if (absDriftSec > 0.15 && absDriftSec <= 0.75) {
           consecutiveDriftTicksRef.current += 1;
           setSyncStatus('locked');
-          const rate = driftSec < 0 ? 1.05 : 0.95;
+          const rate = driftSec < 0 ? 1.06 : 0.94;
           setActivePlaybackRate(rate);
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
 
@@ -548,8 +564,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
 
-          // If drift has persisted for > 3.5s (35 ticks at 100ms), perform ONE gentle seek with a 4.5s cooldown
-          if (consecutiveDriftTicksRef.current > 35 && now - lastSeekTimeRef.current > 4500) {
+          // If persistent for > 2.5s, perform ONE clean snap seek
+          if (consecutiveDriftTicksRef.current > 25 && now - lastSeekTimeRef.current > 3000) {
             if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
               ytPlayerRef.current.seekTo(targetTime, true);
               lastSeekTimeRef.current = now;
@@ -558,10 +574,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             }
           }
         }
-        // TIER 2: HARD SYNC (> 1.0s or initial load/seek) - Single seek with cooldown
+        // TIER 2: HARD SNAP (> 750ms or initial join)
         else {
           setDriftTier('snap');
-          if (now - lastSeekTimeRef.current > 3000) {
+          if (now - lastSeekTimeRef.current > 2000) {
             if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
               ytPlayerRef.current.seekTo(targetTime, true);
               lastSeekTimeRef.current = now;
