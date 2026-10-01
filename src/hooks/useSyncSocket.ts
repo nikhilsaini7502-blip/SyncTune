@@ -48,17 +48,27 @@ export function useSyncSocket() {
     lastUpdateEpochMs: Date.now(),
   });
 
+  // NTP / Cristian's algorithm sample sliding window (lowest RTT has minimum jitter)
+  const clockSamplesRef = useRef<{ rtt: number; offset: number; timestamp: number }[]>([]);
+  const hasInitialOffsetRef = useRef<boolean>(false);
+  const lastFirestoreHeartbeatRef = useRef<number>(0);
+
   useEffect(() => {
     currentUserRef.current = currentUser;
     isHostRef.current = currentUser?.role === 'host' || (room ? room.hostId === currentUser?.id : false);
   }, [currentUser, room]);
 
+  // Master epoch time helper (unified authoritative server timestamp across all devices)
+  const getMasterEpochTime = useCallback(() => {
+    return Date.now() + clockOffsetRef.current;
+  }, []);
+
   // Update internal sync reference snapshot with absolute wall-clock timestamp
   const updateSyncSnapshot = useCallback(
     (pos: number, isPlaying: boolean, rate: number = 1.0, hostTimestamp?: number) => {
       const safePos = typeof pos === 'number' && !isNaN(pos) && pos >= 0 ? pos : 0;
-      const hostEpoch = typeof hostTimestamp === 'number' && hostTimestamp > 0 ? hostTimestamp : Date.now();
       const nowMasterEpoch = Date.now() + clockOffsetRef.current;
+      const hostEpoch = typeof hostTimestamp === 'number' && hostTimestamp > 0 ? hostTimestamp : nowMasterEpoch;
 
       // Calculate elapsed seconds between when the host/server recorded pos and right now
       const timeDiffMs = nowMasterEpoch - hostEpoch;
@@ -81,9 +91,11 @@ export function useSyncSocket() {
     []
   );
 
-  // Real-time smoothed latency & clock offset updater
+  // High-precision Cristian NTP clock offset calculator using minimum-RTT window
   const updateLatencyMeasurement = useCallback((rtt: number, serverTime?: number) => {
-    const sampleLatency = Math.max(2, Math.round(rtt / 2));
+    const safeRtt = Math.max(1, Math.round(rtt));
+    const sampleLatency = Math.max(1, Math.round(safeRtt / 2));
+
     setLatencyMs((prev) => {
       if (prev <= 0) return sampleLatency;
       return Math.round(prev * 0.65 + sampleLatency * 0.35);
@@ -91,9 +103,31 @@ export function useSyncSocket() {
 
     if (typeof serverTime === 'number') {
       const receiveTime = Date.now();
-      const estServerTime = serverTime + rtt / 2;
-      const offsetSample = estServerTime - receiveTime;
-      clockOffsetRef.current = Math.round(clockOffsetRef.current * 0.5 + offsetSample * 0.5);
+      const estServerTime = serverTime + safeRtt / 2;
+      const offsetSample = Math.round(estServerTime - receiveTime);
+
+      // Keep recent 8 samples
+      const now = Date.now();
+      clockSamplesRef.current.push({ rtt: safeRtt, offset: offsetSample, timestamp: now });
+      if (clockSamplesRef.current.length > 8) {
+        clockSamplesRef.current.shift();
+      }
+
+      // In NTP/Cristian's algorithm, the sample with minimum RTT has the lowest queuing delay
+      let bestSample = clockSamplesRef.current[0];
+      for (const s of clockSamplesRef.current) {
+        if (s.rtt < bestSample.rtt) {
+          bestSample = s;
+        }
+      }
+
+      if (!hasInitialOffsetRef.current) {
+        hasInitialOffsetRef.current = true;
+        clockOffsetRef.current = bestSample.offset;
+      } else {
+        // Smoothly steer clock offset towards the lowest-RTT estimate
+        clockOffsetRef.current = Math.round(clockOffsetRef.current * 0.70 + bestSample.offset * 0.30);
+      }
     }
   }, []);
 
@@ -101,7 +135,7 @@ export function useSyncSocket() {
   const recalibrateLatency = useCallback(async () => {
     const t0 = performance.now();
     try {
-      const res = await fetch('/api/ping', { cache: 'no-store' });
+      const res = await fetch(`/api/ping?t=${Date.now()}`, { cache: 'no-store' });
       const contentType = res.headers.get('content-type');
       if (res.ok && contentType && contentType.includes('application/json')) {
         const data = await res.json();
@@ -120,7 +154,7 @@ export function useSyncSocket() {
     const interval = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       recalibrateLatency();
-    }, 4000);
+    }, 3000);
 
     return () => clearInterval(interval);
   }, [recalibrateLatency]);
@@ -146,11 +180,19 @@ export function useSyncSocket() {
         setIsConnected(true);
         setError(null);
 
-        pingInterval = setInterval(() => {
+        const sendPing = () => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping', clientTime: Date.now() }));
           }
-        }, 2000);
+        };
+
+        // Burst 4 rapid calibration pings on connect to establish rock-solid NTP offset within 400ms
+        sendPing();
+        setTimeout(sendPing, 80);
+        setTimeout(sendPing, 180);
+        setTimeout(sendPing, 350);
+
+        pingInterval = setInterval(sendPing, 1500);
       };
 
       ws.onmessage = (event) => {
@@ -547,86 +589,95 @@ export function useSyncSocket() {
   const sendPlay = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      updateSyncSnapshot(pos, true, 1.0, Date.now());
+      const masterNow = getMasterEpochTime();
+      updateSyncSnapshot(pos, true, 1.0, masterNow);
 
-      safeSend({ type: 'play', positionSec: pos });
+      safeSend({ type: 'play', positionSec: pos, timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
           isPlaying: true,
           positionSec: pos,
-          lastSyncTimestamp: Date.now(),
-          updatedAt: Date.now(),
+          lastSyncTimestamp: masterNow,
+          updatedAt: masterNow,
         }).catch(() => {});
       }
     },
-    [safeSend, updateSyncSnapshot]
+    [safeSend, updateSyncSnapshot, getMasterEpochTime]
   );
 
   // Dual-channel Pause
   const sendPause = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      updateSyncSnapshot(pos, false, 1.0, Date.now());
+      const masterNow = getMasterEpochTime();
+      updateSyncSnapshot(pos, false, 1.0, masterNow);
 
-      safeSend({ type: 'pause', positionSec: pos });
+      safeSend({ type: 'pause', positionSec: pos, timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
           isPlaying: false,
           positionSec: pos,
-          lastSyncTimestamp: Date.now(),
-          updatedAt: Date.now(),
+          lastSyncTimestamp: masterNow,
+          updatedAt: masterNow,
         }).catch(() => {});
       }
     },
-    [safeSend, updateSyncSnapshot]
+    [safeSend, updateSyncSnapshot, getMasterEpochTime]
   );
 
   // Dual-channel Seek
   const sendSeek = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
-      updateSyncSnapshot(pos, Boolean(room?.isPlaying), 1.0, Date.now());
+      const masterNow = getMasterEpochTime();
+      updateSyncSnapshot(pos, Boolean(room?.isPlaying), 1.0, masterNow);
 
-      safeSend({ type: 'seek', positionSec: pos });
+      safeSend({ type: 'seek', positionSec: pos, timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
           positionSec: pos,
-          lastSyncTimestamp: Date.now(),
-          updatedAt: Date.now(),
+          lastSyncTimestamp: masterNow,
+          updatedAt: masterNow,
         }).catch(() => {});
       }
     },
-    [safeSend, room?.isPlaying, updateSyncSnapshot]
+    [safeSend, room?.isPlaying, updateSyncSnapshot, getMasterEpochTime]
   );
 
   // Host Periodic Sync Heartbeat
   const sendHostHeartbeat = useCallback(
     (positionSec: number, isPlaying: boolean) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
+      const masterNow = getMasterEpochTime();
       safeSend({
         type: 'sync_heartbeat',
         positionSec: pos,
         isPlaying: Boolean(isPlaying),
-        timestamp: Date.now(),
+        timestamp: masterNow,
       });
 
-      const code = currentRoomCodeRef.current;
-      if (code) {
-        updateDoc(doc(db, 'rooms', code), {
-          positionSec: pos,
-          isPlaying: Boolean(isPlaying),
-          lastSyncTimestamp: Date.now(),
-          updatedAt: Date.now(),
-        }).catch(() => {});
+      // Throttle Firestore writes to once every 2.5 seconds to conserve quota while WebSockets run at high frequency
+      const now = Date.now();
+      if (now - lastFirestoreHeartbeatRef.current >= 2500) {
+        lastFirestoreHeartbeatRef.current = now;
+        const code = currentRoomCodeRef.current;
+        if (code) {
+          updateDoc(doc(db, 'rooms', code), {
+            positionSec: pos,
+            isPlaying: Boolean(isPlaying),
+            lastSyncTimestamp: masterNow,
+            updatedAt: masterNow,
+          }).catch(() => {});
+        }
       }
     },
-    [safeSend]
+    [safeSend, getMasterEpochTime]
   );
 
   // Dual-channel Change Track
@@ -644,9 +695,10 @@ export function useSyncSocket() {
         category: track.category ? String(track.category) : undefined,
       };
 
-      updateSyncSnapshot(0, Boolean(autoPlay), 1.0, Date.now());
+      const masterNow = getMasterEpochTime();
+      updateSyncSnapshot(0, Boolean(autoPlay), 1.0, masterNow);
 
-      safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay) });
+      safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay), timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;
       if (code) {
@@ -654,12 +706,12 @@ export function useSyncSocket() {
           currentTrack: cleanTrack,
           isPlaying: Boolean(autoPlay),
           positionSec: 0,
-          lastSyncTimestamp: Date.now(),
-          updatedAt: Date.now(),
+          lastSyncTimestamp: masterNow,
+          updatedAt: masterNow,
         }).catch(() => {});
       }
     },
-    [safeSend, updateSyncSnapshot]
+    [safeSend, updateSyncSnapshot, getMasterEpochTime]
   );
 
   const sendAudioUnlocked = useCallback(() => {
