@@ -375,14 +375,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             if (event.data === 1) {
               setNeedsUserGesture(false);
               setSyncStatus('locked');
-              // CRUCIAL ZERO-LAG CATCHUP: When video starts playback, snap to host's live position
-              if (!isHostRef.current) {
-                const liveTarget = getAuthoritativeTime();
-                const curTime = event.target.getCurrentTime() || 0;
-                if (Math.abs(curTime - liveTarget) > 0.12) {
-                  event.target.seekTo(liveTarget, true);
-                }
-              }
             } else if (event.data === 2) {
               setSyncStatus('paused');
             } else if (event.data === 0) {
@@ -417,52 +409,46 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     };
   }, [stopAndSilenceYouTube, stopAndSilenceAudio]);
 
-  // Handle direct audio source (HTML5 Audio)
+  // Handle direct audio source loading (HTML5 Audio) - only runs when track changes
   useEffect(() => {
-    // If not audio, make sure the HTML5 element is paused and emptied
     if (currentTrack.source !== 'audio' || !audioRef.current) {
       stopAndSilenceAudio();
       return;
     }
 
-    // Crucial: When playing audio, completely silence and stop any YouTube instance!
+    // Completely silence and stop any YouTube instance
     stopAndSilenceYouTube();
 
     const audio = audioRef.current;
-    audio.src = currentTrack.urlOrVideoId;
-    audio.volume = isMuted ? 0 : volume;
-    audio.preservesPitch = true;
+    
+    // Only set src if track actually changed, NEVER reload while playing!
+    if (audio.src !== currentTrack.urlOrVideoId && !audio.src.endsWith(currentTrack.urlOrVideoId)) {
+      audio.src = currentTrack.urlOrVideoId;
+      audio.volume = isMuted ? 0 : volume;
+      audio.preservesPitch = true;
 
-    // Guaranteed initial align on metadata ready
-    const handleAudioReady = () => {
-      const targetPos = getAuthoritativeTime();
-      if (typeof audio.duration === 'number' && audio.duration > 0) {
-        setDurationSec(audio.duration);
-      }
-      if (Math.abs(audio.currentTime - targetPos) > 0.04) {
-        try {
-          audio.currentTime = targetPos;
-        } catch (e) {}
-      }
-      if (isPlayingRef.current) {
-        safePlayAudio();
-      }
-    };
-
-    audio.addEventListener('loadedmetadata', handleAudioReady, { once: true });
-    audio.addEventListener('canplay', handleAudioReady, { once: true });
-
-    // CRUCIAL: Align instantaneously at the exact millisecond physical audio decoding begins!
-    audio.onplaying = () => {
-      setSyncStatus('locked');
-      if (!isHostRef.current) {
-        const livePos = getAuthoritativeTime();
-        if (Math.abs(audio.currentTime - livePos) > 0.04) {
+      const handleAudioReady = () => {
+        const targetPos = getAuthoritativeTime();
+        if (typeof audio.duration === 'number' && audio.duration > 0) {
+          setDurationSec(audio.duration);
+        }
+        if (Math.abs(audio.currentTime - targetPos) > 0.1) {
           try {
-            audio.currentTime = livePos;
+            audio.currentTime = Math.max(0, targetPos);
           } catch (e) {}
         }
-      }
+        if (isPlayingRef.current) {
+          safePlayAudio();
+        }
+      };
+
+      audio.addEventListener('loadedmetadata', handleAudioReady, { once: true });
+      audio.addEventListener('canplay', handleAudioReady, { once: true });
+    }
+
+    audio.onplaying = () => {
+      setSyncStatus('locked');
+      setNeedsUserGesture(false);
     };
 
     audio.onended = () => {
@@ -474,13 +460,17 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         }
       }
     };
+  }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source, stopAndSilenceYouTube, stopAndSilenceAudio, safePlayAudio]);
 
+  // Handle HTML5 Audio Play / Pause state without touching src or buffers
+  useEffect(() => {
+    if (currentTrack.source !== 'audio' || !audioRef.current) return;
     if (isPlaying) {
       safePlayAudio();
     } else {
       safePauseAudio();
     }
-  }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source, isPlaying, stopAndSilenceYouTube, stopAndSilenceAudio, safePlayAudio, safePauseAudio, getAuthoritativeTime, isMuted, volume]);
+  }, [isPlaying, currentTrack.source, safePlayAudio, safePauseAudio]);
 
   // ZERO-BUFFER PRELOAD ENGINE: Preloads next tracks in background to eliminate queue transition buffering
   useEffect(() => {
@@ -493,13 +483,23 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     });
   }, [room.queue]);
 
+  const getAuthoritativeTimeRef = useRef(getAuthoritativeTime);
+  useEffect(() => {
+    getAuthoritativeTimeRef.current = getAuthoritativeTime;
+  }, [getAuthoritativeTime]);
+
+  const onHostHeartbeatRef = useRef(onHostHeartbeat);
+  useEffect(() => {
+    onHostHeartbeatRef.current = onHostHeartbeat;
+  }, [onHostHeartbeat]);
+
   // =========================================================================
   // ENHANCED ZERO-BUFFER PID SYNCHRONIZATION & DRIFT-STEERING ENGINE
   // =========================================================================
   useEffect(() => {
     const interval = setInterval(() => {
       const now = Date.now();
-      const targetTime = getAuthoritativeTime();
+      const targetTime = getAuthoritativeTimeRef.current();
 
       let currentLocalTime = 0;
 
@@ -588,38 +588,30 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         setDriftTier('locked');
         setSyncStatus('locked');
 
-        // High-frequency live position broadcast every 300ms so listeners stay 100% locked
-        if (now - lastHeartbeatRef.current >= 300 && onHostHeartbeat) {
+        // Broadcast host position smoothly every 500ms
+        if (now - lastHeartbeatRef.current >= 500 && onHostHeartbeatRef.current) {
           lastHeartbeatRef.current = now;
-          onHostHeartbeat(currentLocalTime, isPlaying);
+          onHostHeartbeatRef.current(currentLocalTime, isPlaying);
         }
         return;
       }
 
       // 4. HIGH-FREQUENCY 100ms LISTENER DRIFT MEASUREMENT WITH JITTER FILTER
       const rawDriftSec = currentLocalTime - targetTime;
-      const absRawDrift = Math.abs(rawDriftSec);
-
-      // If drift is large (> 250ms), bypass EMA filter so listener reacts immediately in 1 frame
-      if (absRawDrift > 0.25) {
-        smoothedDriftRef.current = rawDriftSec;
-      } else {
-        // Exponential Moving Average filter removes discretization spikes
-        smoothedDriftRef.current = smoothedDriftRef.current * 0.70 + rawDriftSec * 0.30;
-      }
-
+      // Exponential Moving Average filter removes discretization spikes
+      smoothedDriftRef.current = smoothedDriftRef.current * 0.80 + rawDriftSec * 0.20;
       const driftSec = smoothedDriftRef.current;
       const absDriftSec = Math.abs(driftSec);
       const measuredDriftMs = Math.round(driftSec * 1000);
       setRealtimeDriftMs(measuredDriftMs);
 
       // =======================================================================
-      // CONTINUOUS PID SPEED STEERING: ABSOLUTE ZERO-BUFFER ACOUSTIC LOCK
-      // Steers playbackRate smoothly without buffer flushes or audible jumping
+      // CONTINUOUS PID SPEED STEERING: PURE PLAYBACK RATE SLEW (NO STOPPING!)
+      // Steers playbackRate smoothly without stopping, pausing, or buffer flushes
       // =======================================================================
       if (currentTrack.source === 'audio' && audioRef.current) {
-        // TIER 0: PERFECT ACOUSTIC PHASE LOCK (< 15ms)
-        if (absDriftSec <= 0.015) {
+        // TIER 0: PERFECT ACOUSTIC LOCK (< 30ms)
+        if (absDriftSec <= 0.030) {
           setDriftTier('locked');
           setSyncStatus('locked');
           setActivePlaybackRate(1.0);
@@ -628,23 +620,26 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             audioRef.current.playbackRate = 1.0;
           }
         }
-        // TIER 1: CONTINUOUS PID SPEED CONVERGENCE (15ms to 200ms)
-        // Steers speed smoothly proportional to drift without audible pitch distortion
-        else if (absDriftSec > 0.015 && absDriftSec <= 0.20) {
+        // TIER 1: CONTINUOUS SMOOTH SPEED STEERING (30ms to 2000ms)
+        // Adjusts speed smoothly in proportion to drift - NEVER STOPS OR PAUSES AUDIO!
+        else if (absDriftSec > 0.030 && absDriftSec <= 2.0) {
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
           setSyncStatus('locked');
 
-          const proportionalDelta = -driftSec * 0.45;
-          const clampedDelta = Math.max(-0.08, Math.min(0.08, proportionalDelta));
-          const targetRate = parseFloat((1.0 + clampedDelta).toFixed(4));
+          // Smooth proportional speed slew:
+          // If listener is behind by 200ms: rate = 1.0 + (0.2 * 0.25) = 1.05x
+          // If listener is ahead by 200ms: rate = 1.0 - (0.2 * 0.25) = 0.95x
+          const proportionalDelta = -driftSec * 0.25;
+          const clampedDelta = Math.max(-0.06, Math.min(0.06, proportionalDelta));
+          const targetRate = parseFloat((1.0 + clampedDelta).toFixed(3));
 
           setActivePlaybackRate(targetRate);
           audioRef.current.preservesPitch = true;
           audioRef.current.playbackRate = targetRate;
         }
-        // TIER 2: INSTANT ZERO-LAG SNAP (> 200ms initial join / large drift)
-        // Instantly closes lag to 0.00s in 1 single frame!
-        else {
+        // TIER 2: HARD SEEK (ONLY for massive manual jumps > 2.0s, with a 4.0s cooldown)
+        else if (absDriftSec > 2.0 && now - lastSeekTimeRef.current > 4000) {
+          lastSeekTimeRef.current = now;
           setDriftTier('snap');
           audioRef.current.currentTime = targetTime;
           audioRef.current.playbackRate = 1.0;
@@ -653,11 +648,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         }
       }
       // =======================================================================
-      // FOR YOUTUBE PLAYER: ANTI-BUFFERING SPEED SLEW & COOLDOWN SEEK
+      // FOR YOUTUBE PLAYER: SMOOTH SPEED SLEW (ZERO STOPPING)
       // =======================================================================
       else if (currentTrack.source === 'youtube') {
-        // TIER 0: TIGHT LOCK ZONE (< 40ms)
-        if (absDriftSec <= 0.04) {
+        // TIER 0: LOCK ZONE (< 60ms)
+        if (absDriftSec <= 0.06) {
           consecutiveDriftTicksRef.current = 0;
           setDriftTier('locked');
           setSyncStatus('locked');
@@ -668,11 +663,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
         }
-        // TIER 1: CONTINUOUS RATE SLEW (40ms to 250ms)
-        else if (absDriftSec > 0.04 && absDriftSec <= 0.25) {
-          consecutiveDriftTicksRef.current += 1;
+        // TIER 1: CONTINUOUS SMOOTH SPEED SLEW (60ms to 2500ms)
+        // Modulates rate smoothly (1.04x / 0.96x) so video NEVER stops or stutters!
+        else if (absDriftSec > 0.06 && absDriftSec <= 2.5) {
           setSyncStatus('locked');
-          const rate = driftSec < 0 ? 1.05 : 0.95;
+          const rate = driftSec < 0 ? 1.04 : 0.96;
           setActivePlaybackRate(rate);
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
 
@@ -681,27 +676,15 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               ytPlayerRef.current.setPlaybackRate(rate);
             } catch (e) {}
           }
-
-          // If persistent for > 1.2s, perform ONE clean snap seek
-          if (consecutiveDriftTicksRef.current > 12 && now - lastSeekTimeRef.current > 1500) {
-            if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
-              ytPlayerRef.current.seekTo(targetTime, true);
-              lastSeekTimeRef.current = now;
-              consecutiveDriftTicksRef.current = 0;
-              smoothedDriftRef.current = 0;
-            }
-          }
         }
-        // TIER 2: INSTANT ZERO-LAG SNAP (> 250ms or initial join)
-        else {
+        // TIER 2: HARD SEEK (ONLY for massive manual jumps > 2.5s, with a 4.0s cooldown)
+        else if (absDriftSec > 2.5 && now - lastSeekTimeRef.current > 4000) {
+          lastSeekTimeRef.current = now;
           setDriftTier('snap');
-          if (now - lastSeekTimeRef.current > 600) {
-            if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
-              ytPlayerRef.current.seekTo(targetTime, true);
-              lastSeekTimeRef.current = now;
-              consecutiveDriftTicksRef.current = 0;
-              smoothedDriftRef.current = 0;
-            }
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+            ytPlayerRef.current.seekTo(targetTime, true);
+            consecutiveDriftTicksRef.current = 0;
+            smoothedDriftRef.current = 0;
           }
           setActivePlaybackRate(1.0);
         }
@@ -713,9 +696,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     isPlaying,
     isHost,
     currentTrack.source,
-    getAuthoritativeTime,
-    latencyMs,
-    room.positionSec,
     durationSec,
   ]);
 
