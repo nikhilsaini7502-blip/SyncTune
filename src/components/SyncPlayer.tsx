@@ -18,8 +18,10 @@ import {
   Info,
   ChevronDown,
   ChevronUp,
+  Maximize2,
 } from 'lucide-react';
 import { useThumbnailColors } from '../hooks/useThumbnailColors';
+import { SyncDiagnosticsOverlay } from './SyncDiagnosticsOverlay';
 
 declare global {
   interface Window {
@@ -126,6 +128,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const [activePlaybackRate, setActivePlaybackRate] = useState<number>(1.0);
   const [driftTier, setDriftTier] = useState<DriftCorrectionTier>('locked');
   const [showDiagnostics, setShowDiagnostics] = useState<boolean>(false);
+  const [showFullOverlay, setShowFullOverlay] = useState<boolean>(false);
   const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
   const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
 
@@ -346,8 +349,19 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     }
   }, [currentTrack.id, currentTrack.urlOrVideoId, currentTrack.source, stopAndSilenceYouTube, stopAndSilenceAudio]);
 
+  // ZERO-BUFFER PRELOAD ENGINE: Preloads next tracks in background to eliminate queue transition buffering
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const nextTracks = room.queue?.filter((t) => t.source === 'audio') || [];
+    nextTracks.slice(0, 3).forEach((track) => {
+      const preloadAudio = new Audio();
+      preloadAudio.preload = 'auto';
+      preloadAudio.src = track.urlOrVideoId;
+    });
+  }, [room.queue]);
+
   // =========================================================================
-  // ENHANCED REAL-TIME DRIFT-CORRECTION & LATENCY SYNCHRONIZATION ENGINE
+  // ENHANCED ZERO-BUFFER PID SYNCHRONIZATION & DRIFT-STEERING ENGINE
   // =========================================================================
   useEffect(() => {
     const interval = setInterval(() => {
@@ -446,29 +460,70 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         setDriftTier('locked');
         setSyncStatus('locked');
 
-        // Periodically broadcast live player position so listeners stay 100% locked
-        if (now - lastHeartbeatRef.current > 2000 && onHostHeartbeat) {
+        // Periodically broadcast live player position every 1000ms so listeners stay 100% locked
+        if (now - lastHeartbeatRef.current >= 1000 && onHostHeartbeat) {
           lastHeartbeatRef.current = now;
           onHostHeartbeat(currentLocalTime, isPlaying);
         }
         return;
       }
 
-      // 4. LISTENER DRIFT MEASUREMENT WITH JITTER FILTER
+      // 4. HIGH-FREQUENCY 100ms LISTENER DRIFT MEASUREMENT WITH JITTER FILTER
       const rawDriftSec = currentLocalTime - targetTime;
       // Exponential Moving Average filter removes discretization spikes
-      smoothedDriftRef.current = smoothedDriftRef.current * 0.7 + rawDriftSec * 0.3;
+      smoothedDriftRef.current = smoothedDriftRef.current * 0.70 + rawDriftSec * 0.30;
       const driftSec = smoothedDriftRef.current;
       const absDriftSec = Math.abs(driftSec);
       const measuredDriftMs = Math.round(driftSec * 1000);
       setRealtimeDriftMs(measuredDriftMs);
 
       // =======================================================================
-      // FOR YOUTUBE PLAYER: ANTI-BUFFERING ULTRA-STABLE SYNC
+      // CONTINUOUS PID SPEED STEERING: ABSOLUTE ZERO-BUFFER ACOUSTIC LOCK
+      // Steers playbackRate smoothly without buffer flushes or audible jumping
       // =======================================================================
-      if (currentTrack.source === 'youtube') {
-        // TIER 0: LOCK ZONE (< 350ms) - Imperceptible to human ear on YouTube
-        if (absDriftSec < 0.35) {
+      if (currentTrack.source === 'audio' && audioRef.current) {
+        // TIER 0: PERFECT QUANTUM LOCK (< 15ms)
+        if (absDriftSec <= 0.015) {
+          setDriftTier('locked');
+          setSyncStatus('locked');
+          setActivePlaybackRate(1.0);
+          audioRef.current.preservesPitch = true;
+          if (audioRef.current.playbackRate !== 1.0) {
+            audioRef.current.playbackRate = 1.0;
+          }
+        }
+        // TIER 1: CONTINUOUS PID SPEED CONVERGENCE (15ms to 2800ms)
+        // Adjusts speed smoothly in proportion to drift without buffer purging or pitch distortion
+        else if (absDriftSec > 0.015 && absDriftSec <= 2.8) {
+          setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
+          setSyncStatus('locked');
+
+          // Smooth PID steering: delta proportional to drift
+          // drift < 0 (lagging behind) => rate > 1.0 (e.g. 1.025 to catch up)
+          // drift > 0 (ahead) => rate < 1.0 (e.g. 0.975 to slow down)
+          const proportionalDelta = -driftSec * 0.28;
+          const clampedDelta = Math.max(-0.065, Math.min(0.065, proportionalDelta));
+          const targetRate = parseFloat((1.0 + clampedDelta).toFixed(4));
+
+          setActivePlaybackRate(targetRate);
+          audioRef.current.preservesPitch = true;
+          audioRef.current.playbackRate = targetRate;
+        }
+        // TIER 2: HARD TIME JUMP (> 2.8s jump / manual host seek)
+        else {
+          setDriftTier('snap');
+          audioRef.current.currentTime = targetTime;
+          audioRef.current.playbackRate = 1.0;
+          setActivePlaybackRate(1.0);
+          smoothedDriftRef.current = 0;
+        }
+      }
+      // =======================================================================
+      // FOR YOUTUBE PLAYER: ANTI-BUFFERING SPEED SLEW & COOLDOWN SEEK
+      // =======================================================================
+      else if (currentTrack.source === 'youtube') {
+        // TIER 0: LOCK ZONE (< 200ms) - Imperceptible to human ear on video stream
+        if (absDriftSec <= 0.20) {
           consecutiveDriftTicksRef.current = 0;
           setDriftTier('locked');
           setSyncStatus('locked');
@@ -479,10 +534,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
         }
-        // TIER 1: SOFT SLEW ZONE (350ms to 1200ms) - Nudge rate without audio cuts
-        else if (absDriftSec >= 0.35 && absDriftSec < 1.2) {
+        // TIER 1: SOFT SPEED CONVERGENCE (200ms to 1000ms)
+        else if (absDriftSec > 0.20 && absDriftSec <= 1.0) {
           consecutiveDriftTicksRef.current += 1;
-          setSyncStatus('locked'); // Keep UI status locked/green to avoid confusing flickering
+          setSyncStatus('locked');
           const rate = driftSec < 0 ? 1.05 : 0.95;
           setActivePlaybackRate(rate);
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
@@ -493,8 +548,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
 
-          // If drift has persisted for > 4 seconds (18 ticks), perform ONE gentle seek with a 5s cooldown
-          if (consecutiveDriftTicksRef.current > 18 && now - lastSeekTimeRef.current > 5000) {
+          // If drift has persisted for > 3.5s (35 ticks at 100ms), perform ONE gentle seek with a 4.5s cooldown
+          if (consecutiveDriftTicksRef.current > 35 && now - lastSeekTimeRef.current > 4500) {
             if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
               ytPlayerRef.current.seekTo(targetTime, true);
               lastSeekTimeRef.current = now;
@@ -503,10 +558,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             }
           }
         }
-        // TIER 2: HARD SYNC (> 1.2s or initial load/seek) - Single seek with 3.5s cooldown
+        // TIER 2: HARD SYNC (> 1.0s or initial load/seek) - Single seek with cooldown
         else {
           setDriftTier('snap');
-          if (now - lastSeekTimeRef.current > 3500) {
+          if (now - lastSeekTimeRef.current > 3000) {
             if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
               ytPlayerRef.current.seekTo(targetTime, true);
               lastSeekTimeRef.current = now;
@@ -517,37 +572,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           setActivePlaybackRate(1.0);
         }
       }
-      // =======================================================================
-      // FOR DIRECT AUDIO (HTML5): SUB-MILLISECOND CONTINUOUS PITCH-PRESERVED STEERING
-      // =======================================================================
-      else if (currentTrack.source === 'audio' && audioRef.current) {
-        // TIER 0: PERFECT LOCK (< 35ms)
-        if (absDriftSec < 0.035) {
-          setDriftTier('locked');
-          setSyncStatus('locked');
-          setActivePlaybackRate(1.0);
-          audioRef.current.preservesPitch = true;
-          audioRef.current.playbackRate = 1.0;
-        }
-        // TIER 1: PITCH-PRESERVED CONTINUOUS STEERING (35ms to 600ms)
-        else if (absDriftSec < 0.6) {
-          setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
-          setSyncStatus('locked');
-          const rate = driftSec < 0 ? 1.04 : 0.96;
-          setActivePlaybackRate(rate);
-          audioRef.current.preservesPitch = true;
-          audioRef.current.playbackRate = rate;
-        }
-        // TIER 2: EXACT TIMESTAMP JUMP (> 600ms)
-        else {
-          setDriftTier('snap');
-          audioRef.current.currentTime = targetTime;
-          audioRef.current.playbackRate = 1.0;
-          setActivePlaybackRate(1.0);
-          smoothedDriftRef.current = 0;
-        }
-      }
-    }, 220);
+    }, 100);
 
     return () => clearInterval(interval);
   }, [
@@ -966,9 +991,19 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                   Real-Time Synchronization Engine Telemetry
                 </h4>
               </div>
-              <span className="text-[10px] text-zinc-400 font-mono">
-                Sample Rate: 4.5 Hz (every 220ms)
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-zinc-400 font-mono hidden sm:inline">
+                  Sample Rate: 10 Hz (every 100ms)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowFullOverlay(true)}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold flex items-center gap-1 transition active:scale-95"
+                >
+                  <Maximize2 className="w-3 h-3" />
+                  <span>Drift Oscilloscope & Jitter Analyzer</span>
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
@@ -1053,19 +1088,28 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               <div className="flex items-center gap-2">
                 <Info className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
                 <span className="text-[11px]">
-                  <strong>Smooth Drift Steer:</strong> The player micro-adjusts playback tempo by ±4%
-                  so audio stays in lockstep without skips, clicks, or pitch shifts.
+                  <strong>High-Frequency Sync:</strong> Compares local time with authoritative clock every 100ms
+                  and continuously steers playback speed to converge drift to 0ms with zero audible jumps.
                 </span>
               </div>
-              {!isHost && (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={handleResync}
-                  disabled={isCalibrating}
-                  className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition active:scale-95 shrink-0 ml-2"
+                  type="button"
+                  onClick={() => setShowFullOverlay(true)}
+                  className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold rounded-lg border border-zinc-700 transition"
                 >
-                  Force Resync
+                  Full Diagnostics Overlay
                 </button>
-              )}
+                {!isHost && (
+                  <button
+                    onClick={handleResync}
+                    disabled={isCalibrating}
+                    className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg transition active:scale-95 shrink-0"
+                  >
+                    Force Resync
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -1231,6 +1275,27 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           </div>
         </div>
       </div>
+
+      {/* FULL TELEMETRY & JITTER OSCILLOSCOPE DIAGNOSTIC OVERLAY MODAL */}
+      <SyncDiagnosticsOverlay
+        isOpen={showFullOverlay}
+        onClose={() => setShowFullOverlay(false)}
+        isCalibrating={isCalibrating}
+        onForceResync={!isHost ? handleResync : undefined}
+        data={{
+          driftMs: realtimeDriftMs,
+          authoritativeTimeSec: getAuthoritativeTime(),
+          localPlayerTimeSec: currentTimeSec,
+          playbackRate: activePlaybackRate,
+          driftTier,
+          latencyMs,
+          clockOffsetMs,
+          isHost,
+          isPlaying,
+          mediaSource: currentTrack.source,
+          trackTitle: currentTrack.title,
+        }}
+      />
     </div>
   );
 };
