@@ -9,7 +9,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'LK7-_xhn3c8',
     durationSec: 218,
-    thumbnail: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/LK7-_xhn3c8/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -19,7 +19,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'hOHKltAiKXQ',
     durationSec: 234,
-    thumbnail: 'https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/hOHKltAiKXQ/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -29,7 +29,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'eVli-tstM5E',
     durationSec: 175,
-    thumbnail: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/eVli-tstM5E/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -39,7 +39,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'd5gf9dXHevw',
     durationSec: 196,
-    thumbnail: 'https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/d5gf9dXHevw/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -49,7 +49,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'kPa7bsKwL-8',
     durationSec: 251,
-    thumbnail: 'https://images.unsplash.com/photo-1516589178581-6cd7833ae3b2?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/kPa7bsKwL-8/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -59,7 +59,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'y1ozWpLpDlc',
     durationSec: 178,
-    thumbnail: 'https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/y1ozWpLpDlc/hqdefault.jpg',
     category: 'YouTube Top Grossing',
   },
   {
@@ -69,7 +69,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'tOM-nWPcR4U',
     durationSec: 195,
-    thumbnail: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/tOM-nWPcR4U/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -79,7 +79,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'XO8wew38VM8',
     durationSec: 198,
-    thumbnail: 'https://images.unsplash.com/photo-1508700115892-45ecd05ae2ad?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/XO8wew38VM8/hqdefault.jpg',
     category: 'YouTube Top Grossing',
   },
   {
@@ -89,7 +89,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'k3g_WjLCsgo',
     durationSec: 170,
-    thumbnail: 'https://images.unsplash.com/photo-1518895949257-7621c3c786d7?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/k3g_WjLCsgo/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -99,7 +99,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'gHDdeV2p_p8',
     durationSec: 251,
-    thumbnail: 'https://images.unsplash.com/photo-1529333166437-7750a6dd5a70?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/gHDdeV2p_p8/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -109,7 +109,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'gJLVTKhTnog',
     durationSec: 218,
-    thumbnail: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/gJLVTKhTnog/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -119,7 +119,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'q8Pe_Y37U18',
     durationSec: 202,
-    thumbnail: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/q8Pe_Y37U18/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -129,7 +129,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'Oa_RSwwpPaA',
     durationSec: 180,
-    thumbnail: 'https://images.unsplash.com/photo-1465847899084-d164df4dedc6?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/Oa_RSwwpPaA/hqdefault.jpg',
     category: 'Trending Reels',
   },
   {
@@ -139,7 +139,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: '4Ty64s3k4gA',
     durationSec: 158,
-    thumbnail: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/4Ty64s3k4gA/hqdefault.jpg',
     category: 'YouTube Top Grossing',
   },
   {
@@ -149,7 +149,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'g6fnFALEseI',
     durationSec: 268,
-    thumbnail: 'https://images.unsplash.com/photo-1518199266791-5375a83190b7?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/g6fnFALEseI/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -159,7 +159,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: '2Vv-BfVoq4g',
     durationSec: 263,
-    thumbnail: 'https://images.unsplash.com/photo-1516589178581-6cd7833ae3b2?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/2Vv-BfVoq4g/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
   {
@@ -169,10 +169,10 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'youtube',
     urlOrVideoId: 'GxldQ9eX2wo',
     durationSec: 178,
-    thumbnail: 'https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://img.youtube.com/vi/GxldQ9eX2wo/hqdefault.jpg',
     category: 'Romantic & Couple',
   },
-  // Guaranteed Audio Streaming
+  // Guaranteed Audio Streaming (Royalty Free)
   {
     id: 'l1',
     title: 'Lo-Fi Chill Beats: Rainy Night',
@@ -180,7 +180,7 @@ export const CURATED_TRACKS_FALLBACK: Track[] = [
     source: 'audio',
     urlOrVideoId: 'https://cdn.freesound.org/previews/612/612610_5674468-lq.mp3',
     durationSec: 154,
-    thumbnail: 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=400&auto=format&fit=crop&q=80',
+    thumbnail: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=400&auto=format&fit=crop&q=80',
     category: 'Chill & Lo-Fi',
   },
   {

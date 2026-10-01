@@ -12,6 +12,15 @@ import {
 } from 'firebase/firestore';
 import { CURATED_TRACKS_FALLBACK } from '../curatedTracks';
 
+interface HighPrecisionSyncSnapshot {
+  positionSec: number;
+  isPlaying: boolean;
+  playbackRate: number;
+  localReceivePerfMs: number;
+  hostTimestampMs: number;
+  lastUpdateEpochMs: number;
+}
+
 export function useSyncSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(true);
@@ -27,10 +36,38 @@ export function useSyncSocket() {
   const firestoreUnsubRef = useRef<Unsubscribe | null>(null);
   const currentRoomCodeRef = useRef<string | null>(null);
   const currentUserRef = useRef<UserInfo | null>(null);
+  const isHostRef = useRef<boolean>(false);
+
+  // High-precision monotonic reference snapshot (immune to phone system clock misalignments)
+  const syncSnapshotRef = useRef<HighPrecisionSyncSnapshot>({
+    positionSec: 0,
+    isPlaying: false,
+    playbackRate: 1.0,
+    localReceivePerfMs: performance.now(),
+    hostTimestampMs: Date.now(),
+    lastUpdateEpochMs: Date.now(),
+  });
 
   useEffect(() => {
     currentUserRef.current = currentUser;
-  }, [currentUser]);
+    isHostRef.current = currentUser?.role === 'host' || (room ? room.hostId === currentUser?.id : false);
+  }, [currentUser, room]);
+
+  // Update internal sync reference snapshot
+  const updateSyncSnapshot = useCallback(
+    (pos: number, isPlaying: boolean, rate: number = 1.0, hostTimestamp?: number) => {
+      const safePos = typeof pos === 'number' && !isNaN(pos) && pos >= 0 ? pos : 0;
+      syncSnapshotRef.current = {
+        positionSec: safePos,
+        isPlaying: Boolean(isPlaying),
+        playbackRate: Number(rate) || 1.0,
+        localReceivePerfMs: performance.now(),
+        hostTimestampMs: hostTimestamp || Date.now(),
+        lastUpdateEpochMs: Date.now(),
+      };
+    },
+    []
+  );
 
   // Real-time smoothed latency & clock offset updater
   const updateLatencyMeasurement = useCallback((rtt: number, serverTime?: number) => {
@@ -48,7 +85,7 @@ export function useSyncSocket() {
     }
   }, []);
 
-  // Quick HTTP ping calibrator for serverless/Firestore or baseline calibration
+  // Quick HTTP ping calibrator
   const recalibrateLatency = useCallback(async () => {
     const t0 = performance.now();
     try {
@@ -61,17 +98,17 @@ export function useSyncSocket() {
         return Math.round(rtt / 2);
       }
     } catch {
-      // Fallback baseline
+      // Fallback
     }
     return latencyMs;
   }, [updateLatencyMeasurement, latencyMs]);
 
-  // Fallback ping loop if WebSocket is closed / serverless
+  // Fallback ping loop
   useEffect(() => {
     const interval = setInterval(() => {
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) return;
       recalibrateLatency();
-    }, 3200);
+    }, 4000);
 
     return () => clearInterval(interval);
   }, [recalibrateLatency]);
@@ -101,7 +138,7 @@ export function useSyncSocket() {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'ping', clientTime: Date.now() }));
           }
-        }, 2500);
+        }, 2000);
       };
 
       ws.onmessage = (event) => {
@@ -122,6 +159,12 @@ export function useSyncSocket() {
               setRoom(data.room);
               currentRoomCodeRef.current = data.room.roomCode;
               setError(null);
+              updateSyncSnapshot(
+                data.room.positionSec,
+                data.room.isPlaying,
+                data.room.playbackRate,
+                data.room.lastSyncTimestamp
+              );
               break;
             }
 
@@ -145,13 +188,19 @@ export function useSyncSocket() {
             }
 
             case 'playback_sync': {
+              updateSyncSnapshot(
+                data.positionSec,
+                data.isPlaying,
+                data.playbackRate,
+                data.lastSyncTimestamp
+              );
               setRoom((prev) => {
                 if (!prev) return null;
                 return {
                   ...prev,
-                  isPlaying: data.isPlaying,
+                  isPlaying: Boolean(data.isPlaying),
                   positionSec: data.positionSec,
-                  lastSyncTimestamp: data.lastSyncTimestamp,
+                  lastSyncTimestamp: data.lastSyncTimestamp || Date.now(),
                   playbackRate: data.playbackRate ?? prev.playbackRate,
                 };
               });
@@ -159,15 +208,21 @@ export function useSyncSocket() {
             }
 
             case 'track_changed': {
+              updateSyncSnapshot(
+                data.positionSec || 0,
+                data.isPlaying,
+                1.0,
+                data.lastSyncTimestamp
+              );
               setRoom((prev) => {
                 if (!prev) return null;
                 return {
                   ...prev,
                   currentTrack: data.currentTrack,
                   queue: data.queue !== undefined ? data.queue : prev.queue,
-                  isPlaying: data.isPlaying,
-                  positionSec: data.positionSec,
-                  lastSyncTimestamp: data.lastSyncTimestamp,
+                  isPlaying: Boolean(data.isPlaying),
+                  positionSec: data.positionSec || 0,
+                  lastSyncTimestamp: data.lastSyncTimestamp || Date.now(),
                 };
               });
               break;
@@ -228,7 +283,7 @@ export function useSyncSocket() {
         wsRef.current.close();
       }
     };
-  }, [updateLatencyMeasurement]);
+  }, [updateLatencyMeasurement, updateSyncSnapshot]);
 
   // Safe WebSocket sender helper
   const safeSend = useCallback((payload: any) => {
@@ -237,13 +292,13 @@ export function useSyncSocket() {
         wsRef.current.send(JSON.stringify(payload));
         return true;
       } catch (err) {
-        console.error('Failed to stringify WebSocket message:', err);
+        console.error('Failed to send WebSocket message:', err);
       }
     }
     return false;
   }, []);
 
-  // Universal Join Room (Dual-channel: Subscribes to Firestore real-time listener AND sends WebSocket)
+  // Universal Join Room
   const sendJoin = useCallback(
     async (params: {
       roomId?: string;
@@ -252,7 +307,6 @@ export function useSyncSocket() {
       role: 'host' | 'listener';
       avatar?: string;
     }) => {
-      // Generate clean 4-character code if not provided
       let code = (params.roomCode || params.roomId || '').toUpperCase().trim();
       if (!code) {
         const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -286,7 +340,7 @@ export function useSyncSocket() {
 
       const initialTrack: Track = CURATED_TRACKS_FALLBACK[0];
 
-      // Optimistic instant transition for host - Never gets stuck waiting for cloud network!
+      // Optimistic instant transition for host
       if (params.role === 'host') {
         const newHostRoom: RoomState = {
           roomId: code,
@@ -298,15 +352,16 @@ export function useSyncSocket() {
           positionSec: 0,
           lastSyncTimestamp: Date.now(),
           playbackRate: 1,
-          queue: [], // Clean empty queue
+          queue: [],
           users: [userObj],
         };
 
         setCurrentUser(userObj);
         setRoom(newHostRoom);
         setError(null);
+        updateSyncSnapshot(0, false, 1.0, Date.now());
 
-        // Asynchronously persist to Cloud Firestore for cross-device sync
+        // Asynchronously persist to Cloud Firestore
         try {
           const roomRef = doc(db, 'rooms', code);
           setDoc(
@@ -332,11 +387,12 @@ export function useSyncSocket() {
 
                 setRoom((prev) => {
                   const rawUsers = data.users;
-                  const usersList: UserInfo[] = Array.isArray(rawUsers) && rawUsers.length > 0
-                    ? rawUsers
-                    : rawUsers && typeof rawUsers === 'object'
-                    ? Object.values(rawUsers)
-                    : (prev?.users || [userObj]);
+                  const usersList: UserInfo[] =
+                    Array.isArray(rawUsers) && rawUsers.length > 0
+                      ? rawUsers
+                      : rawUsers && typeof rawUsers === 'object'
+                      ? Object.values(rawUsers)
+                      : prev?.users || [userObj];
 
                   const baseTrack = data.currentTrack || prev?.currentTrack || initialTrack;
                   return {
@@ -379,7 +435,7 @@ export function useSyncSocket() {
 
         if (snapshot.exists()) {
           const data = snapshot.data() as RoomState;
-          const existingUsers = data.users || [];
+          const existingUsers = Array.isArray(data.users) ? data.users : [];
           const updatedUsers = existingUsers.filter((u) => u.id !== uid);
           updatedUsers.push(userObj);
 
@@ -392,8 +448,14 @@ export function useSyncSocket() {
             ...data,
             users: updatedUsers,
           });
+          updateSyncSnapshot(
+            data.positionSec || 0,
+            data.isPlaying || false,
+            data.playbackRate || 1.0,
+            data.lastSyncTimestamp || Date.now()
+          );
         } else {
-          // Optimistic listener fallback room while waiting for sync
+          // Optimistic listener fallback room
           const fallbackRoom: RoomState = {
             roomId: code,
             roomCode: code,
@@ -408,9 +470,10 @@ export function useSyncSocket() {
             users: [userObj],
           };
           setRoom(fallbackRoom);
+          updateSyncSnapshot(0, false, 1.0, Date.now());
         }
 
-        // Attach Realtime Firestore Listener for cross-device instant sync
+        // Attach Realtime Firestore Listener
         if (firestoreUnsubRef.current) {
           firestoreUnsubRef.current();
         }
@@ -421,13 +484,22 @@ export function useSyncSocket() {
             if (docSnap.exists()) {
               const data = docSnap.data();
 
+              // Update authoritative sync clock snapshot
+              updateSyncSnapshot(
+                typeof data.positionSec === 'number' ? data.positionSec : 0,
+                Boolean(data.isPlaying),
+                Number(data.playbackRate) || 1.0,
+                Number(data.lastSyncTimestamp) || Date.now()
+              );
+
               setRoom((prev) => {
                 const rawUsers = data.users;
-                const usersList: UserInfo[] = Array.isArray(rawUsers) && rawUsers.length > 0
-                  ? rawUsers
-                  : rawUsers && typeof rawUsers === 'object'
-                  ? Object.values(rawUsers)
-                  : (prev?.users || [userObj]);
+                const usersList: UserInfo[] =
+                  Array.isArray(rawUsers) && rawUsers.length > 0
+                    ? rawUsers
+                    : rawUsers && typeof rawUsers === 'object'
+                    ? Object.values(rawUsers)
+                    : prev?.users || [userObj];
 
                 const baseTrack = data.currentTrack || prev?.currentTrack || initialTrack;
                 return {
@@ -456,16 +528,17 @@ export function useSyncSocket() {
         console.warn('Firestore room sync note:', err);
       }
     },
-    [safeSend]
+    [safeSend, updateSyncSnapshot]
   );
 
   // Dual-channel Play
   const sendPlay = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
+      updateSyncSnapshot(pos, true, 1.0, Date.now());
+
       safeSend({ type: 'play', positionSec: pos });
 
-      // Always update Firestore doc so Phone gets it even if on cellular or background tab
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
@@ -476,13 +549,15 @@ export function useSyncSocket() {
         }).catch(() => {});
       }
     },
-    [safeSend]
+    [safeSend, updateSyncSnapshot]
   );
 
   // Dual-channel Pause
   const sendPause = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
+      updateSyncSnapshot(pos, false, 1.0, Date.now());
+
       safeSend({ type: 'pause', positionSec: pos });
 
       const code = currentRoomCodeRef.current;
@@ -495,19 +570,45 @@ export function useSyncSocket() {
         }).catch(() => {});
       }
     },
-    [safeSend]
+    [safeSend, updateSyncSnapshot]
   );
 
   // Dual-channel Seek
   const sendSeek = useCallback(
     (positionSec: number) => {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
+      updateSyncSnapshot(pos, Boolean(room?.isPlaying), 1.0, Date.now());
+
       safeSend({ type: 'seek', positionSec: pos });
 
       const code = currentRoomCodeRef.current;
       if (code) {
         updateDoc(doc(db, 'rooms', code), {
           positionSec: pos,
+          lastSyncTimestamp: Date.now(),
+          updatedAt: Date.now(),
+        }).catch(() => {});
+      }
+    },
+    [safeSend, room?.isPlaying, updateSyncSnapshot]
+  );
+
+  // Host Periodic Sync Heartbeat
+  const sendHostHeartbeat = useCallback(
+    (positionSec: number, isPlaying: boolean) => {
+      const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
+      safeSend({
+        type: 'sync_heartbeat',
+        positionSec: pos,
+        isPlaying: Boolean(isPlaying),
+        timestamp: Date.now(),
+      });
+
+      const code = currentRoomCodeRef.current;
+      if (code) {
+        updateDoc(doc(db, 'rooms', code), {
+          positionSec: pos,
+          isPlaying: Boolean(isPlaying),
           lastSyncTimestamp: Date.now(),
           updatedAt: Date.now(),
         }).catch(() => {});
@@ -531,6 +632,8 @@ export function useSyncSocket() {
         category: track.category ? String(track.category) : undefined,
       };
 
+      updateSyncSnapshot(0, Boolean(autoPlay), 1.0, Date.now());
+
       safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay) });
 
       const code = currentRoomCodeRef.current;
@@ -544,7 +647,7 @@ export function useSyncSocket() {
         }).catch(() => {});
       }
     },
-    [safeSend]
+    [safeSend, updateSyncSnapshot]
   );
 
   const sendAudioUnlocked = useCallback(() => {
@@ -654,6 +757,8 @@ export function useSyncSocket() {
     if (code && room && room.queue.length > 0) {
       const nextTrack = room.queue[0];
       const remainingQueue = room.queue.slice(1);
+      updateSyncSnapshot(0, true, 1.0, Date.now());
+
       updateDoc(doc(db, 'rooms', code), {
         currentTrack: nextTrack,
         queue: remainingQueue,
@@ -663,26 +768,29 @@ export function useSyncSocket() {
         updatedAt: Date.now(),
       }).catch(() => {});
     }
-  }, [safeSend, room]);
+  }, [safeSend, room, updateSyncSnapshot]);
 
   const sendTrackEnded = useCallback(() => {
     sendNextTrack();
   }, [sendNextTrack]);
 
-  // Precise current position calculator
+  // High-precision monotonic authoritative position calculator
   const getAuthoritativeTime = useCallback(() => {
-    if (!room) return 0;
-    if (!room.isPlaying) {
-      return room.positionSec;
+    const snap = syncSnapshotRef.current;
+    if (!snap.isPlaying) {
+      return snap.positionSec;
     }
-    const currentServerTime = Date.now() + clockOffsetRef.current;
-    const elapsedSec = Math.max(0, (currentServerTime - room.lastSyncTimestamp) / 1000);
-    const calculated = room.positionSec + elapsedSec * (room.playbackRate || 1);
-    if (room.currentTrack?.durationSec && calculated > room.currentTrack.durationSec) {
+
+    // High precision monotonic elapsed delta using performance.now()
+    const elapsedSec = Math.max(0, (performance.now() - snap.localReceivePerfMs) / 1000);
+    const oneWayLatencySec = Math.max(0, (latencyMs || 20) / 2000);
+    const calculated = snap.positionSec + (elapsedSec + oneWayLatencySec) * (snap.playbackRate || 1.0);
+
+    if (room?.currentTrack?.durationSec && calculated > room.currentTrack.durationSec) {
       return room.currentTrack.durationSec;
     }
-    return calculated;
-  }, [room]);
+    return Math.max(0, calculated);
+  }, [room?.currentTrack?.durationSec, latencyMs]);
 
   return {
     isConnected,
@@ -700,6 +808,7 @@ export function useSyncSocket() {
     sendPlay,
     sendPause,
     sendSeek,
+    sendHostHeartbeat,
     sendChangeTrack,
     sendNextTrack,
     sendTrackEnded,

@@ -44,6 +44,7 @@ export default function App() {
     sendPlay,
     sendPause,
     sendSeek,
+    sendHostHeartbeat,
     sendChangeTrack,
     sendNextTrack,
     sendTrackEnded,
@@ -213,6 +214,7 @@ export default function App() {
           onPlay={(pos) => sendPlay(pos)}
           onPause={(pos) => sendPause(pos)}
           onSeek={(pos) => sendSeek(pos)}
+          onHostHeartbeat={(pos, playing) => sendHostHeartbeat(pos, playing)}
           onNextTrack={sendNextTrack}
           onTrackEnded={sendTrackEnded}
           onAudioUnlocked={sendAudioUnlocked}

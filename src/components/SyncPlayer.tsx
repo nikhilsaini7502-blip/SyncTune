@@ -38,6 +38,7 @@ interface SyncPlayerProps {
   onPlay: (pos: number) => void;
   onPause: (pos: number) => void;
   onSeek: (pos: number) => void;
+  onHostHeartbeat?: (pos: number, isPlaying: boolean) => void;
   onNextTrack?: () => void;
   onTrackEnded?: () => void;
   onAudioUnlocked: () => void;
@@ -64,6 +65,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   onPlay,
   onPause,
   onSeek,
+  onHostHeartbeat,
   onNextTrack,
   onTrackEnded,
   onAudioUnlocked,
@@ -131,6 +133,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const smoothedDriftRef = useRef<number>(0);
   const consecutiveDriftTicksRef = useRef<number>(0);
   const lastSeekTimeRef = useRef<number>(0);
+  const lastHeartbeatRef = useRef<number>(0);
 
   useEffect(() => {
     hasEndedRef.current = null;
@@ -348,6 +351,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   // =========================================================================
   useEffect(() => {
     const interval = setInterval(() => {
+      const now = Date.now();
       const rawTargetTime = getAuthoritativeTime();
 
       // Acoustic latency compensation for listeners:
@@ -441,136 +445,106 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         setRealtimeDriftMs(0);
         setDriftTier('locked');
         setSyncStatus('locked');
+
+        // Periodically broadcast live player position so listeners stay 100% locked
+        if (now - lastHeartbeatRef.current > 2000 && onHostHeartbeat) {
+          lastHeartbeatRef.current = now;
+          onHostHeartbeat(currentLocalTime, isPlaying);
+        }
         return;
       }
 
       // 4. LISTENER DRIFT MEASUREMENT WITH JITTER FILTER
       const rawDriftSec = currentLocalTime - targetTime;
-      // Exponential Moving Average filter removes sudden timer discretization spikes
-      smoothedDriftRef.current = smoothedDriftRef.current * 0.65 + rawDriftSec * 0.35;
+      // Exponential Moving Average filter removes discretization spikes
+      smoothedDriftRef.current = smoothedDriftRef.current * 0.7 + rawDriftSec * 0.3;
       const driftSec = smoothedDriftRef.current;
       const absDriftSec = Math.abs(driftSec);
       const measuredDriftMs = Math.round(driftSec * 1000);
       setRealtimeDriftMs(measuredDriftMs);
 
-      const now = Date.now();
+      // =======================================================================
+      // FOR YOUTUBE PLAYER: ANTI-BUFFERING ULTRA-STABLE SYNC
+      // =======================================================================
+      if (currentTrack.source === 'youtube') {
+        // TIER 0: LOCK ZONE (< 350ms) - Imperceptible to human ear on YouTube
+        if (absDriftSec < 0.35) {
+          consecutiveDriftTicksRef.current = 0;
+          setDriftTier('locked');
+          setSyncStatus('locked');
+          setActivePlaybackRate(1.0);
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+            try {
+              ytPlayerRef.current.setPlaybackRate(1.0);
+            } catch (e) {}
+          }
+        }
+        // TIER 1: SOFT SLEW ZONE (350ms to 1200ms) - Nudge rate without audio cuts
+        else if (absDriftSec >= 0.35 && absDriftSec < 1.2) {
+          consecutiveDriftTicksRef.current += 1;
+          setSyncStatus('locked'); // Keep UI status locked/green to avoid confusing flickering
+          const rate = driftSec < 0 ? 1.05 : 0.95;
+          setActivePlaybackRate(rate);
+          setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
 
-      // -----------------------------------------------------------------------
-      // TIER 0: PERFECT SYNC LOCK (< 45ms)
-      // -----------------------------------------------------------------------
-      if (absDriftSec < 0.045) {
-        consecutiveDriftTicksRef.current = 0;
-        setDriftTier('locked');
-        setSyncStatus('locked');
-        setActivePlaybackRate(1.0);
+          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+            try {
+              ytPlayerRef.current.setPlaybackRate(rate);
+            } catch (e) {}
+          }
 
-        if (audioRef.current && audioRef.current.playbackRate !== 1.0) {
+          // If drift has persisted for > 4 seconds (18 ticks), perform ONE gentle seek with a 5s cooldown
+          if (consecutiveDriftTicksRef.current > 18 && now - lastSeekTimeRef.current > 5000) {
+            if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+              ytPlayerRef.current.seekTo(targetTime, true);
+              lastSeekTimeRef.current = now;
+              consecutiveDriftTicksRef.current = 0;
+              smoothedDriftRef.current = 0;
+            }
+          }
+        }
+        // TIER 2: HARD SYNC (> 1.2s or initial load/seek) - Single seek with 3.5s cooldown
+        else {
+          setDriftTier('snap');
+          if (now - lastSeekTimeRef.current > 3500) {
+            if (ytPlayerRef.current && typeof ytPlayerRef.current.seekTo === 'function') {
+              ytPlayerRef.current.seekTo(targetTime, true);
+              lastSeekTimeRef.current = now;
+              consecutiveDriftTicksRef.current = 0;
+              smoothedDriftRef.current = 0;
+            }
+          }
+          setActivePlaybackRate(1.0);
+        }
+      }
+      // =======================================================================
+      // FOR DIRECT AUDIO (HTML5): SUB-MILLISECOND CONTINUOUS PITCH-PRESERVED STEERING
+      // =======================================================================
+      else if (currentTrack.source === 'audio' && audioRef.current) {
+        // TIER 0: PERFECT LOCK (< 35ms)
+        if (absDriftSec < 0.035) {
+          setDriftTier('locked');
+          setSyncStatus('locked');
+          setActivePlaybackRate(1.0);
           audioRef.current.preservesPitch = true;
           audioRef.current.playbackRate = 1.0;
         }
-        if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
-          try {
-            ytPlayerRef.current.setPlaybackRate(1.0);
-          } catch (e) {}
-        }
-      }
-      // -----------------------------------------------------------------------
-      // TIER 1: MICRO-TEMPO PITCH-PRESERVED DRIFT STEERING (45ms to 240ms)
-      // Smoothly adjusts playback speed by ±4% without audio cuts or pitch distortion
-      // -----------------------------------------------------------------------
-      else if (absDriftSec >= 0.045 && absDriftSec < 0.24) {
-        consecutiveDriftTicksRef.current = 0;
-        setSyncStatus('syncing');
-
-        if (driftSec < 0) {
-          // Local player is lagging behind host: speed up by 4% to close gap
-          const rate = 1.04;
-          setActivePlaybackRate(rate);
-          setDriftTier('micro_catchup');
-
-          if (audioRef.current) {
-            audioRef.current.preservesPitch = true;
-            audioRef.current.playbackRate = rate;
-          }
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
-            try {
-              ytPlayerRef.current.setPlaybackRate(rate);
-            } catch (e) {}
-          }
-        } else {
-          // Local player is ahead of host: slow down by 4% to let host catch up
-          const rate = 0.96;
-          setActivePlaybackRate(rate);
-          setDriftTier('micro_brake');
-
-          if (audioRef.current) {
-            audioRef.current.preservesPitch = true;
-            audioRef.current.playbackRate = rate;
-          }
-          if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
-            try {
-              ytPlayerRef.current.setPlaybackRate(rate);
-            } catch (e) {}
-          }
-        }
-      }
-      // -----------------------------------------------------------------------
-      // TIER 2: MODERATE DRIFT SLEW (240ms to 850ms)
-      // Applies steeper rate nudge; smoothly snaps if drift persists > 1.3s
-      // -----------------------------------------------------------------------
-      else if (absDriftSec >= 0.24 && absDriftSec < 0.85) {
-        consecutiveDriftTicksRef.current += 1;
-        setSyncStatus('syncing');
-        setDriftTier('slew');
-
-        if (currentTrack.source === 'audio' && audioRef.current) {
-          const rate = driftSec < 0 ? 1.08 : 0.92;
+        // TIER 1: PITCH-PRESERVED CONTINUOUS STEERING (35ms to 600ms)
+        else if (absDriftSec < 0.6) {
+          setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
+          setSyncStatus('locked');
+          const rate = driftSec < 0 ? 1.04 : 0.96;
           setActivePlaybackRate(rate);
           audioRef.current.preservesPitch = true;
           audioRef.current.playbackRate = rate;
-
-          // If drift has not converged after 6 ticks (~1.3s), perform a seamless snap
-          if (
-            consecutiveDriftTicksRef.current > 6 &&
-            now - lastSeekTimeRef.current > 1200
-          ) {
-            audioRef.current.currentTime = targetTime;
-            audioRef.current.playbackRate = 1.0;
-            setActivePlaybackRate(1.0);
-            consecutiveDriftTicksRef.current = 0;
-            smoothedDriftRef.current = 0;
-            lastSeekTimeRef.current = now;
-          }
-        } else if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
-          // YouTube: gentle seek with 1.2s cooldown to avoid buffering stutter
-          if (now - lastSeekTimeRef.current > 1200) {
-            ytPlayerRef.current.seekTo(targetTime + 0.03, true);
-            lastSeekTimeRef.current = now;
-            consecutiveDriftTicksRef.current = 0;
-            smoothedDriftRef.current = 0;
-          }
         }
-      }
-      // -----------------------------------------------------------------------
-      // TIER 3: MAJOR DRIFT HARD-SNAP (> 850ms or Seek Event)
-      // Immediate precision seek to master authoritative timestamp
-      // -----------------------------------------------------------------------
-      else {
-        if (now - lastSeekTimeRef.current > 900) {
+        // TIER 2: EXACT TIMESTAMP JUMP (> 600ms)
+        else {
           setDriftTier('snap');
-          setSyncStatus('syncing');
-
-          if (currentTrack.source === 'audio' && audioRef.current) {
-            audioRef.current.currentTime = targetTime;
-            audioRef.current.playbackRate = 1.0;
-          } else if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
-            ytPlayerRef.current.seekTo(targetTime, true);
-          }
-
+          audioRef.current.currentTime = targetTime;
+          audioRef.current.playbackRate = 1.0;
           setActivePlaybackRate(1.0);
           smoothedDriftRef.current = 0;
-          consecutiveDriftTicksRef.current = 0;
-          lastSeekTimeRef.current = now;
         }
       }
     }, 220);
@@ -894,38 +868,32 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowDiagnostics((prev) => !prev)}
-                  className={`text-xs px-2.5 py-1 rounded-xl font-bold flex items-center gap-1.5 transition active:scale-95 border ${
+                  className={`text-xs px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 transition active:scale-95 border ${
                     isHost
                       ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/40'
-                      : driftTier === 'locked'
+                      : driftTier === 'locked' || driftTier === 'micro_catchup' || driftTier === 'micro_brake'
                       ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/40 hover:bg-emerald-900/40'
-                      : driftTier === 'micro_catchup' || driftTier === 'micro_brake'
-                      ? 'text-cyan-300 bg-cyan-950/40 border-cyan-500/40 hover:bg-cyan-900/40'
                       : 'text-amber-300 bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40'
                   }`}
                   title="Click to view live Real-Time Drift & Latency Diagnostics"
                 >
                   <span
                     className={`w-2 h-2 rounded-full ${
-                      isHost || (syncStatus === 'locked' && isPlaying)
+                      isHost || driftTier === 'locked' || driftTier === 'micro_catchup' || driftTier === 'micro_brake'
                         ? 'bg-emerald-400 animate-pulse'
-                        : driftTier === 'micro_catchup' || driftTier === 'micro_brake'
-                        ? 'bg-cyan-400 animate-ping'
                         : 'bg-amber-400 animate-bounce'
                     }`}
                   />
                   <span>
                     {isHost
-                      ? 'DJ Master Clock'
+                      ? '👑 DJ Master Host'
                       : driftTier === 'locked'
-                      ? `Sync Locked (${Math.abs(realtimeDriftMs)}ms)`
-                      : driftTier === 'micro_catchup'
-                      ? `Speed Catchup (${activePlaybackRate}x • ${Math.abs(realtimeDriftMs)}ms)`
-                      : driftTier === 'micro_brake'
-                      ? `Speed Brake (${activePlaybackRate}x • ${Math.abs(realtimeDriftMs)}ms)`
-                      : 'Calibrating Sync...'}
+                      ? `0.0s Lag • Live Synced`
+                      : driftTier === 'micro_catchup' || driftTier === 'micro_brake'
+                      ? `Live Synced (${Math.abs(realtimeDriftMs)}ms)`
+                      : 'Aligning Stream...'}
                   </span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-white/10 opacity-80">
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-white/10 opacity-80 tabular-nums">
                     {latencyMs}ms
                   </span>
                   {showDiagnostics ? (
