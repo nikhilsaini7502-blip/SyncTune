@@ -784,27 +784,27 @@ wss.on('connection', (ws: WebSocket) => {
           const { roomId, roomCode, userName, role, avatar } = data;
           let room: RoomState | undefined;
 
-          // Lookup existing room
-          if (roomId && rooms.has(roomId)) {
-            room = rooms.get(roomId);
-          } else if (roomCode) {
-            const codeUpper = roomCode.toUpperCase().trim();
-            for (const r of rooms.values()) {
-              if (r.roomCode.toUpperCase() === codeUpper) {
-                room = r;
-                break;
+          const targetCode = String(roomCode || roomId || '').toUpperCase().trim();
+
+          // Lookup existing room by roomId or roomCode
+          if (targetCode) {
+            if (rooms.has(targetCode)) {
+              room = rooms.get(targetCode);
+            } else {
+              for (const r of rooms.values()) {
+                if (r.roomCode.toUpperCase() === targetCode || r.roomId.toUpperCase() === targetCode) {
+                  room = r;
+                  break;
+                }
               }
             }
           }
 
-          // If not found and user wants to host, create new room
+          // If not found and user wants to host, create new room with requested code
           if (!room) {
-            if (role === 'host' || !roomId) {
-              const newRoomId = roomId || `room_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-              let newCode = generateRoomCode();
-              while (Array.from(rooms.values()).some((r) => r.roomCode === newCode)) {
-                newCode = generateRoomCode();
-              }
+            if (role === 'host' || !targetCode) {
+              const newCode = targetCode && targetCode.length >= 3 ? targetCode : generateRoomCode();
+              const newRoomId = newCode;
 
               room = {
                 roomId: newRoomId,
@@ -820,6 +820,7 @@ wss.on('connection', (ws: WebSocket) => {
                 users: {},
               };
               rooms.set(newRoomId, room);
+              rooms.set(newCode, room);
             } else {
               ws.send(JSON.stringify({ type: 'error', message: 'Room not found. Check the code or scan QR again.' }));
               return;
@@ -879,6 +880,7 @@ wss.on('connection', (ws: WebSocket) => {
             isPlaying: true,
             positionSec: pos,
             lastSyncTimestamp: now,
+            serverTime: now,
             playbackRate: room.playbackRate,
             byUser: room.users[meta.userId]?.name || 'DJ',
           });
@@ -901,6 +903,7 @@ wss.on('connection', (ws: WebSocket) => {
             isPlaying: false,
             positionSec: pos,
             lastSyncTimestamp: now,
+            serverTime: now,
             playbackRate: room.playbackRate,
             byUser: room.users[meta.userId]?.name || 'DJ',
           });
@@ -922,6 +925,7 @@ wss.on('connection', (ws: WebSocket) => {
             isPlaying: room.isPlaying,
             positionSec: pos,
             lastSyncTimestamp: now,
+            serverTime: now,
             playbackRate: room.playbackRate,
             byUser: room.users[meta.userId]?.name || 'DJ',
           });
@@ -944,6 +948,7 @@ wss.on('connection', (ws: WebSocket) => {
             isPlaying: room.isPlaying,
             positionSec: pos,
             lastSyncTimestamp: now,
+            serverTime: now,
             playbackRate: room.playbackRate,
             isHeartbeat: true,
           }, ws);

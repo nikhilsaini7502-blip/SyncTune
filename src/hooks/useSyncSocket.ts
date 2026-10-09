@@ -242,6 +242,12 @@ export function useSyncSocket() {
             }
 
             case 'playback_sync': {
+              if (typeof data.serverTime === 'number') {
+                const receiveTime = Date.now();
+                const estServerTime = data.serverTime + Math.max(1, Math.round(latencyMs));
+                const offsetSample = Math.round(estServerTime - receiveTime);
+                clockOffsetRef.current = Math.round(clockOffsetRef.current * 0.80 + offsetSample * 0.20);
+              }
               updateSyncSnapshot(
                 data.positionSec,
                 data.isPlaying,
@@ -455,10 +461,10 @@ export function useSyncSocket() {
                     createdAt: data.createdAt || Date.now(),
                     hostId: data.hostId || uid,
                     currentTrack: baseTrack,
-                    isPlaying: Boolean(data.isPlaying),
-                    positionSec: typeof data.positionSec === 'number' ? data.positionSec : 0,
-                    lastSyncTimestamp: Number(data.lastSyncTimestamp) || Date.now(),
-                    playbackRate: Number(data.playbackRate) || 1,
+                    isPlaying: prev ? prev.isPlaying : Boolean(data.isPlaying),
+                    positionSec: prev ? prev.positionSec : (typeof data.positionSec === 'number' ? data.positionSec : 0),
+                    lastSyncTimestamp: prev ? prev.lastSyncTimestamp : (Number(data.lastSyncTimestamp) || Date.now()),
+                    playbackRate: prev ? prev.playbackRate : (Number(data.playbackRate) || 1),
                     queue: Array.isArray(data.queue) ? data.queue : [],
                     users: usersList,
                   };
@@ -538,13 +544,17 @@ export function useSyncSocket() {
             if (docSnap.exists()) {
               const data = docSnap.data();
 
-              // Update authoritative sync clock snapshot
-              updateSyncSnapshot(
-                typeof data.positionSec === 'number' ? data.positionSec : 0,
-                Boolean(data.isPlaying),
-                Number(data.playbackRate) || 1.0,
-                Number(data.lastSyncTimestamp) || Date.now()
-              );
+              const isWsActive = Boolean(wsRef.current && wsRef.current.readyState === WebSocket.OPEN);
+
+              // Only update sync snapshot from Firestore if WebSocket is offline
+              if (!isWsActive) {
+                updateSyncSnapshot(
+                  typeof data.positionSec === 'number' ? data.positionSec : 0,
+                  Boolean(data.isPlaying),
+                  Number(data.playbackRate) || 1.0,
+                  Number(data.lastSyncTimestamp) || Date.now()
+                );
+              }
 
               setRoom((prev) => {
                 const rawUsers = data.users;
@@ -562,10 +572,11 @@ export function useSyncSocket() {
                   createdAt: data.createdAt || Date.now(),
                   hostId: data.hostId || uid,
                   currentTrack: baseTrack,
-                  isPlaying: Boolean(data.isPlaying),
-                  positionSec: typeof data.positionSec === 'number' ? data.positionSec : 0,
-                  lastSyncTimestamp: Number(data.lastSyncTimestamp) || Date.now(),
-                  playbackRate: Number(data.playbackRate) || 1,
+                  // Keep real-time playback state from WebSocket if active to prevent stuttering
+                  isPlaying: isWsActive && prev ? prev.isPlaying : Boolean(data.isPlaying),
+                  positionSec: isWsActive && prev ? prev.positionSec : (typeof data.positionSec === 'number' ? data.positionSec : 0),
+                  lastSyncTimestamp: isWsActive && prev ? prev.lastSyncTimestamp : (Number(data.lastSyncTimestamp) || Date.now()),
+                  playbackRate: isWsActive && prev ? prev.playbackRate : (Number(data.playbackRate) || 1),
                   queue: Array.isArray(data.queue) ? data.queue : [],
                   users: usersList,
                 };
