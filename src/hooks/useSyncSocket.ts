@@ -709,6 +709,18 @@ export function useSyncSocket() {
       const masterNow = getMasterEpochTime();
       updateSyncSnapshot(0, Boolean(autoPlay), 1.0, masterNow);
 
+      // Optimistically update host room state immediately so player starts playing with 0ms delay
+      setRoom((prev) => {
+        if (!prev) return null;
+        return {
+          ...prev,
+          currentTrack: cleanTrack,
+          isPlaying: Boolean(autoPlay),
+          positionSec: 0,
+          lastSyncTimestamp: masterNow,
+        };
+      });
+
       safeSend({ type: 'change_track', track: cleanTrack, autoPlay: Boolean(autoPlay), timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;

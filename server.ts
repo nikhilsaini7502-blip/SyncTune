@@ -253,13 +253,38 @@ function generateRoomCode(): string {
 
 export function extractYouTubeId(input: string): string | null {
   if (!input) return null;
-  const trimmed = input.trim();
-  if (/^[a-zA-Z0-9_-]{11}$/.test(trimmed)) {
-    return trimmed;
+  const str = input.trim();
+
+  // 1. Bare 11-char ID (e.g. k3g_WjLCsgo, LK7-_xhn3c8)
+  if (/^[a-zA-Z0-9_-]{11}$/.test(str)) {
+    return str;
   }
-  const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/|youtube\.com\/shorts\/)([^"&?\/\s]{11})/;
-  const match = trimmed.match(regExp);
-  return match && match[1].length === 11 ? match[1] : null;
+
+  // 2. youtu.be/VIDEO_ID (with optional query like ?si=...)
+  const youtuBeMatch = str.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  if (youtuBeMatch) return youtuBeMatch[1];
+
+  // 3. youtube.com/shorts/VIDEO_ID
+  const shortsMatch = str.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/);
+  if (shortsMatch) return shortsMatch[1];
+
+  // 4. youtube.com/live/VIDEO_ID
+  const liveMatch = str.match(/youtube\.com\/live\/([a-zA-Z0-9_-]{11})/);
+  if (liveMatch) return liveMatch[1];
+
+  // 5. youtube.com/embed/VIDEO_ID or youtube-nocookie.com/embed/VIDEO_ID
+  const embedMatch = str.match(/(?:youtube|youtube-nocookie)\.com\/embed\/([a-zA-Z0-9_-]{11})/);
+  if (embedMatch) return embedMatch[1];
+
+  // 6. Any youtube.com URL with ?v=VIDEO_ID or &v=VIDEO_ID (works for m.youtube, music.youtube, etc.)
+  const vMatch = str.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  if (vMatch) return vMatch[1];
+
+  // 7. Generic fallback: any 11-char segment after youtube.com/.../
+  const genericMatch = str.match(/youtube\.com\/(?:v|e|vi)\/([a-zA-Z0-9_-]{11})/);
+  if (genericMatch) return genericMatch[1];
+
+  return null;
 }
 
 const app = express();
@@ -641,7 +666,7 @@ app.get('/api/rooms/check/:codeOrId', (req, res) => {
   });
 });
 
-app.post('/api/parse-track', (req, res) => {
+app.post('/api/parse-track', async (req, res) => {
   const { input, title, artist } = req.body;
   if (!input) {
     res.status(400).json({ error: 'Input required' });
@@ -650,10 +675,32 @@ app.post('/api/parse-track', (req, res) => {
 
   const ytId = extractYouTubeId(input);
   if (ytId) {
+    let resolvedTitle = title || `YouTube: ${ytId}`;
+    let resolvedArtist = artist || 'YouTube Stream';
+
+    // Attempt to fetch video title & author via public YouTube oEmbed
+    try {
+      const oembedRes = await fetch(
+        `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${ytId}&format=json`,
+        { headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SyncTune/1.0)' } }
+      );
+      if (oembedRes.ok) {
+        const oembedData = (await oembedRes.json()) as any;
+        if (oembedData?.title && !title) {
+          resolvedTitle = oembedData.title;
+        }
+        if (oembedData?.author_name && !artist) {
+          resolvedArtist = oembedData.author_name;
+        }
+      }
+    } catch (e) {
+      // Fallback cleanly to default title
+    }
+
     const track: Track = {
       id: `yt_${ytId}`,
-      title: title || `YouTube: ${ytId}`,
-      artist: artist || 'YouTube Stream',
+      title: resolvedTitle,
+      artist: resolvedArtist,
       source: 'youtube',
       urlOrVideoId: ytId,
       durationSec: 240, // default placeholder until player loads

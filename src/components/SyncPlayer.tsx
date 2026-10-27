@@ -290,6 +290,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           videoId: currentTrack.urlOrVideoId,
           startSeconds: Math.max(0, initialPos),
         });
+        try {
+          if (typeof ytPlayerRef.current.unMute === 'function') ytPlayerRef.current.unMute();
+          if (typeof ytPlayerRef.current.setVolume === 'function') ytPlayerRef.current.setVolume(isMuted ? 0 : volume * 100);
+        } catch (e) {}
+
         if (isPlaying) {
           ytPlayerRef.current.playVideo();
         } else {
@@ -324,11 +329,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           disablekb: isHost ? 0 : 1,
           fs: 1,
           rel: 0,
+          enablejsapi: 1,
           modestbranding: 1,
           playsinline: 1,
           iv_load_policy: 3,
           loop: 0,
-          origin: window.location.origin,
           start: Math.max(0, Math.floor(initialPos)),
         },
         events: {
@@ -991,14 +996,22 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           </div>
         )}
 
-        {/* Hidden / Embedded Video Container */}
+        {/* Active YouTube Video Player Container */}
         <div
-          className={`w-full transition-all duration-300 ${
+          className={`transition-all duration-300 relative ${
             viewMode === 'video' && currentTrack.source === 'youtube'
-              ? 'aspect-video h-auto block'
-              : 'h-0 overflow-hidden opacity-0 pointer-events-none'
+              ? 'w-full aspect-video h-auto block'
+              : 'fixed -top-[9999px] -left-[9999px] w-[320px] h-[240px] opacity-0 pointer-events-none'
           }`}
         >
+          {viewMode === 'video' && (
+            <button
+              onClick={() => setViewMode('visualizer')}
+              className="absolute top-3 right-3 z-20 px-3 py-1 bg-black/80 hover:bg-black text-white text-xs font-bold rounded-lg border border-white/20 transition backdrop-blur-md cursor-pointer shadow-lg"
+            >
+              Cover View
+            </button>
+          )}
           <div ref={ytContainerRef} className="w-full h-full" />
         </div>
 
@@ -1040,9 +1053,20 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20" />
 
                 {/* Floating Vinyl Pin */}
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-semibold text-white border border-white/20 uppercase tracking-wider flex items-center gap-1">
-                  {currentTrack.source === 'youtube' ? 'YouTube' : 'Audio Stream'}
-                </div>
+                {currentTrack.source === 'youtube' ? (
+                  <button
+                    onClick={() => setViewMode('video')}
+                    className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 hover:bg-black/90 backdrop-blur-sm text-[10px] font-semibold text-white border border-white/20 uppercase tracking-wider flex items-center gap-1 transition cursor-pointer"
+                    title="Watch YouTube Video"
+                  >
+                    <span>YouTube</span>
+                    <Maximize2 className="w-2.5 h-2.5 text-sky-400" />
+                  </button>
+                ) : (
+                  <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-semibold text-white border border-white/20 uppercase tracking-wider flex items-center gap-1">
+                    Audio Stream
+                  </div>
+                )}
               </div>
 
               {/* Rotating Vinyl Accent behind cover when playing */}

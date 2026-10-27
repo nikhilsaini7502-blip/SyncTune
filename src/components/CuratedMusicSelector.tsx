@@ -57,6 +57,25 @@ export const formatDuration = (seconds?: number): string => {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 };
 
+export function extractYouTubeIdClient(input: string): string | null {
+  if (!input) return null;
+  const str = input.trim();
+  if (/^[a-zA-Z0-9_-]{11}$/.test(str)) return str;
+  const youtuBeMatch = str.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/);
+  if (youtuBeMatch) return youtuBeMatch[1];
+  const shortsMatch = str.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/);
+  if (shortsMatch) return shortsMatch[1];
+  const liveMatch = str.match(/youtube\.com\/live\/([a-zA-Z0-9_-]{11})/);
+  if (liveMatch) return liveMatch[1];
+  const embedMatch = str.match(/(?:youtube|youtube-nocookie)\.com\/embed\/([a-zA-Z0-9_-]{11})/);
+  if (embedMatch) return embedMatch[1];
+  const vMatch = str.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  if (vMatch) return vMatch[1];
+  const genericMatch = str.match(/youtube\.com\/(?:v|e|vi)\/([a-zA-Z0-9_-]{11})/);
+  if (genericMatch) return genericMatch[1];
+  return null;
+}
+
 export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   curatedTracks,
   currentTrackId,
@@ -284,17 +303,62 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   // Handle YouTube or direct audio stream link
   const handleCustomTrackSubmit = async (playImmediately: boolean) => {
     setErrorMsg(null);
-    if (!customInput.trim()) {
+    const rawInput = customInput.trim();
+    if (!rawInput) {
       setErrorMsg('Please enter a YouTube video URL or ID.');
       return;
     }
 
+    // 1. Instant client-side YouTube detection for 0ms latency
+    const localYtId = extractYouTubeIdClient(rawInput);
+    if (localYtId) {
+      const trackTitle = customTitle.trim() || `YouTube Video`;
+      const instantTrack: Track = {
+        id: `yt_${localYtId}`,
+        title: trackTitle,
+        artist: 'YouTube',
+        source: 'youtube',
+        urlOrVideoId: localYtId,
+        durationSec: 240,
+        thumbnail: `https://img.youtube.com/vi/${localYtId}/hqdefault.jpg`,
+        category: 'Custom YouTube',
+      };
+
+      if (playImmediately) {
+        onSelectTrack(instantTrack);
+        setAddedNotice(`Playing "${instantTrack.title}" live!`);
+      } else {
+        onAddToQueue(instantTrack);
+        setAddedNotice(`Added to queue: "${instantTrack.title}"`);
+      }
+
+      setCustomInput('');
+      setCustomTitle('');
+      setTimeout(() => setAddedNotice(null), 3000);
+
+      // Async fetch full oEmbed title to polish track name if not provided
+      fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${localYtId}&format=json`)
+        .then((r) => r.json())
+        .then((oembed) => {
+          if (oembed?.title && !customTitle.trim()) {
+            instantTrack.title = oembed.title;
+            if (oembed.author_name) instantTrack.artist = oembed.author_name;
+            if (playImmediately) {
+              onSelectTrack({ ...instantTrack });
+            }
+          }
+        })
+        .catch(() => {});
+      return;
+    }
+
+    // 2. Direct audio URL or server fallback parsing
     try {
       const res = await fetch('/api/parse-track', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          input: customInput.trim(),
+          input: rawInput,
           title: customTitle.trim() || undefined,
         }),
       });
