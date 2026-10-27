@@ -247,6 +247,46 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     consecutiveDriftTicksRef.current = 0;
   }, [currentTrack.id]);
 
+  // Guaranteed instant play/pause handler on host user interaction
+  const handleTogglePlayPause = useCallback(() => {
+    if (!isHost) return;
+    if (isPlaying) {
+      // 1. Immediately and forcibly pause local media outputs on user tap
+      if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
+        try {
+          if (typeof ytPlayerRef.current.pauseVideo === 'function') ytPlayerRef.current.pauseVideo();
+        } catch (e) {}
+      }
+      if (currentTrack.source === 'audio' && audioRef.current) {
+        safePauseAudio();
+      }
+      setSyncStatus('paused');
+      onPause(currentTimeSec);
+    } else {
+      // 1. Immediately and forcibly resume local media outputs on user tap
+      if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
+        try {
+          if (typeof ytPlayerRef.current.unMute === 'function') ytPlayerRef.current.unMute();
+          if (typeof ytPlayerRef.current.playVideo === 'function') ytPlayerRef.current.playVideo();
+        } catch (e) {}
+      }
+      if (currentTrack.source === 'audio' && audioRef.current) {
+        safePlayAudio();
+      }
+      setSyncStatus('locked');
+      onPlay(currentTimeSec);
+    }
+  }, [
+    isHost,
+    isPlaying,
+    currentTrack.source,
+    currentTimeSec,
+    onPause,
+    onPlay,
+    safePauseAudio,
+    safePlayAudio,
+  ]);
+
   // Dynamically extract dominant colors from current track's thumbnail
   const colors = useThumbnailColors(currentTrack.thumbnail, currentTrack.id, currentTrack.title);
 
@@ -536,6 +576,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               const ytState = ytPlayerRef.current.getPlayerState();
               const isAtEnd = durationSec > 5 && (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
               if (
+                !isHost &&
                 isPlaying &&
                 ytState === 2 &&
                 !isAtEnd &&
@@ -544,11 +585,12 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 now - lastSeekTimeRef.current > 2000
               ) {
                 ytPlayerRef.current.playVideo();
-              } else if ((!isPlaying || isAtEnd) && (ytState === 1 || ytState === 3)) {
-                try {
-                  ytPlayerRef.current.pauseVideo();
-                  ytPlayerRef.current.stopVideo();
-                } catch (e) {}
+              } else if (!isPlaying || isAtEnd) {
+                if (ytState === 1 || ytState === 3) {
+                  try {
+                    ytPlayerRef.current.pauseVideo();
+                  } catch (e) {}
+                }
               }
             }
           } catch (e) {
@@ -679,8 +721,9 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       // Steers playbackRate smoothly without stopping, pausing, or buffer flushes
       // =======================================================================
       if (currentTrack.source === 'audio' && audioRef.current) {
-        // TIER 0: PERFECT ACOUSTIC LOCK (< 20ms)
-        if (absDriftSec <= 0.020) {
+        // TIER 0: PERFECT ACOUSTIC LOCK (< 25ms)
+        if (absDriftSec <= 0.025) {
+          consecutiveDriftTicksRef.current = 0;
           setDriftTier('locked');
           setSyncStatus('locked');
           setActivePlaybackRate(1.0);
@@ -689,44 +732,53 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             audioRef.current.playbackRate = 1.0;
           }
         }
-        // TIER 1: CONTINUOUS SMOOTH SPEED STEERING (20ms to 2500ms)
-        // Adjusts speed smoothly in proportion to drift - NEVER STOPS OR PAUSES AUDIO!
-        else if (absDriftSec > 0.020 && absDriftSec <= 2.5) {
+        // TIER 1: CONTINUOUS SMOOTH SPEED STEERING (25ms to 350ms)
+        else if (absDriftSec > 0.025 && absDriftSec <= 0.35) {
+          consecutiveDriftTicksRef.current++;
           setDriftTier(driftSec < 0 ? 'micro_catchup' : 'micro_brake');
           setSyncStatus('locked');
 
           // Smooth proportional speed slew:
-          const proportionalDelta = -driftSec * 0.20;
-          const clampedDelta = Math.max(-0.06, Math.min(0.06, proportionalDelta));
-          const targetRate = parseFloat((1.0 + clampedDelta).toFixed(3));
+          const proportionalDelta = Math.max(-0.08, Math.min(0.08, -driftSec * 0.35));
+          const targetRate = parseFloat((1.0 + proportionalDelta).toFixed(3));
 
           setActivePlaybackRate(targetRate);
           audioRef.current.preservesPitch = true;
           audioRef.current.playbackRate = targetRate;
+
+          // If drift persists for > 15 ticks (1.5s), snap to targetTime
+          if (consecutiveDriftTicksRef.current > 15 && now - lastSeekTimeRef.current > 2000) {
+            lastSeekTimeRef.current = now;
+            audioRef.current.currentTime = targetTime;
+            audioRef.current.playbackRate = 1.0;
+            consecutiveDriftTicksRef.current = 0;
+            smoothedDriftRef.current = 0;
+          }
         }
-        // TIER 2: HARD SEEK (ONLY for massive manual jumps > 2.5s, with a 6.0s cooldown)
-        else if (absDriftSec > 2.5 && now - lastSeekTimeRef.current > 6000) {
+        // TIER 2: HARD SEEK (for drift > 350ms with 2.0s cooldown)
+        else if (absDriftSec > 0.35 && now - lastSeekTimeRef.current > 2000) {
           lastSeekTimeRef.current = now;
           isSeekingRef.current = true;
           setDriftTier('snap');
           audioRef.current.currentTime = targetTime;
           audioRef.current.playbackRate = 1.0;
           setActivePlaybackRate(1.0);
+          consecutiveDriftTicksRef.current = 0;
           smoothedDriftRef.current = 0;
           setTimeout(() => {
             isSeekingRef.current = false;
-          }, 600);
+          }, 400);
         }
       }
       // =======================================================================
-      // FOR YOUTUBE PLAYER: SMOOTH SPEED SLEW (ZERO STOPPING / NEVER RE-BUFFERS!)
+      // FOR YOUTUBE PLAYER: SMOOTH SPEED SLEW WITH INSTANT AUTO-CATCHUP
       // =======================================================================
       else if (currentTrack.source === 'youtube') {
         const ytPlayer = ytPlayerRef.current;
         if (!ytPlayer) return;
 
-        // TIER 0: LOCK ZONE (< 80ms)
-        if (absDriftSec <= 0.08) {
+        // TIER 0: LOCK ZONE (< 60ms)
+        if (absDriftSec <= 0.06) {
           consecutiveDriftTicksRef.current = 0;
           setDriftTier('locked');
           setSyncStatus('locked');
@@ -737,10 +789,9 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } catch (e) {}
           }
         }
-        // TIER 1: CONTINUOUS SMOOTH SPEED SLEW (80ms to 2500ms) - ZERO STOPPING!
-        // Uses YouTube's official supported playback rates (1.25x / 0.75x)
-        // to cleanly catch up or drop back without causing iframe buffering!
-        else if (absDriftSec > 0.08 && absDriftSec <= 2.5) {
+        // TIER 1: CONTINUOUS SMOOTH SPEED SLEW (60ms to 350ms)
+        else if (absDriftSec > 0.06 && absDriftSec <= 0.35) {
+          consecutiveDriftTicksRef.current++;
           setSyncStatus('locked');
           const targetRate = driftSec < 0 ? 1.25 : 0.75;
           setActivePlaybackRate(targetRate);
@@ -751,23 +802,35 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               ytPlayer.setPlaybackRate(targetRate);
             } catch (e) {}
           }
+
+          // If drift persists for > 15 ticks (1.5s) without closing, perform instant micro-snap
+          if (consecutiveDriftTicksRef.current > 15 && now - lastSeekTimeRef.current > 2000) {
+            lastSeekTimeRef.current = now;
+            if (typeof ytPlayer.seekTo === 'function') {
+              try {
+                ytPlayer.seekTo(targetTime, true);
+              } catch (e) {}
+            }
+            consecutiveDriftTicksRef.current = 0;
+            smoothedDriftRef.current = 0;
+          }
         }
-        // TIER 2: HARD SEEK (ONLY for massive skips > 2.5s, with a strict 8-second cooldown)
-        else if (absDriftSec > 2.5 && now - lastSeekTimeRef.current > 8000) {
+        // TIER 2: HARD SEEK (Immediately eliminate any drift > 350ms with 2.0s cooldown)
+        else if (absDriftSec > 0.35 && now - lastSeekTimeRef.current > 2000) {
           lastSeekTimeRef.current = now;
           isSeekingRef.current = true;
           setDriftTier('snap');
           if (typeof ytPlayer.seekTo === 'function') {
             try {
               ytPlayer.seekTo(targetTime, true);
-              consecutiveDriftTicksRef.current = 0;
-              smoothedDriftRef.current = 0;
             } catch (e) {}
           }
+          consecutiveDriftTicksRef.current = 0;
+          smoothedDriftRef.current = 0;
           setActivePlaybackRate(1.0);
           setTimeout(() => {
             isSeekingRef.current = false;
-          }, 1200);
+          }, 600);
         }
       }
     }, 100);
@@ -1405,14 +1468,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               {isHost ? (
                 <>
                   <button
-                    onClick={() => {
-                      if (isPlaying) {
-                        onPause(currentTimeSec);
-                      } else {
-                        onPlay(currentTimeSec);
-                      }
-                    }}
-                    className="w-12 h-12 rounded-full text-white flex items-center justify-center font-bold shadow-lg transition-all duration-300 active:scale-95"
+                    onClick={handleTogglePlayPause}
+                    className="w-12 h-12 rounded-full text-white flex items-center justify-center font-bold shadow-lg transition-all duration-300 active:scale-95 cursor-pointer"
                     style={{
                       backgroundColor: colors.primary,
                       boxShadow: `0 10px 25px -5px ${colors.glowRgba}`,

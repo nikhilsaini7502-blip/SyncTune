@@ -603,6 +603,9 @@ export function useSyncSocket() {
       const masterNow = getMasterEpochTime();
       updateSyncSnapshot(pos, true, 1.0, masterNow);
 
+      // Optimistically update room in local state immediately so UI and tickers know we are playing
+      setRoom((prev) => (prev ? { ...prev, isPlaying: true, positionSec: pos, lastSyncTimestamp: masterNow } : null));
+
       safeSend({ type: 'play', positionSec: pos, timestamp: masterNow });
 
       const code = currentRoomCodeRef.current;
@@ -624,6 +627,9 @@ export function useSyncSocket() {
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
       const masterNow = getMasterEpochTime();
       updateSyncSnapshot(pos, false, 1.0, masterNow);
+
+      // Optimistically update room in local state immediately so UI and tickers know we are paused
+      setRoom((prev) => (prev ? { ...prev, isPlaying: false, positionSec: pos, lastSyncTimestamp: masterNow } : null));
 
       safeSend({ type: 'pause', positionSec: pos, timestamp: masterNow });
 

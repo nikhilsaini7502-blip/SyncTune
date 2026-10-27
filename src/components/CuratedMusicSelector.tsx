@@ -90,7 +90,7 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   onSavePlaylistToCloud,
   onDeletePlaylistFromCloud,
 }) => {
-  const [activeTab, setActiveTab] = useState<'catalog' | 'device' | 'links' | 'playlists' | 'queue'>('catalog');
+  const [activeTab, setActiveTab] = useState<'catalog' | 'device' | 'links' | 'playlists' | 'queue'>('links');
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -481,7 +481,7 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
   };
 
   // Filter curated songs
-  const categories = ['All', 'Bollywood', 'Punjabi', 'Party Beats', 'Global Hits', 'Chill & Lo-Fi'];
+  const categories = ['All', 'Chill & Lo-Fi', 'Electronic & Synth', 'Romantic & Acoustic'];
   const filteredTracks = curatedTracks.filter((track) => {
     const matchesCategory =
       selectedCategory === 'All' || track.category?.toLowerCase().includes(selectedCategory.toLowerCase());
@@ -498,30 +498,36 @@ export const CuratedMusicSelector: React.FC<CuratedMusicSelectorProps> = ({
       <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3 mb-4 flex-wrap gap-2">
         <div className="flex items-center gap-1.5 bg-zinc-900/90 p-1.5 rounded-2xl border border-zinc-800 overflow-x-auto max-w-full scrollbar-none">
           <button
-            onClick={() => setActiveTab('catalog')}
+            onClick={() => setActiveTab('links')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
-              activeTab === 'catalog' ? 'bg-zinc-800 text-emerald-400 shadow-sm border border-zinc-700' : 'text-zinc-400 hover:text-white'
+              activeTab === 'links'
+                ? 'bg-zinc-800 text-sky-400 shadow-sm border border-zinc-700'
+                : 'text-zinc-400 hover:text-white'
             }`}
           >
-            <Music className="w-3.5 h-3.5 text-emerald-400" /> Popular Hits
+            <Globe className="w-3.5 h-3.5 text-sky-400" /> YouTube & Spotify
+          </button>
+
+          <button
+            onClick={() => setActiveTab('catalog')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
+              activeTab === 'catalog'
+                ? 'bg-zinc-800 text-emerald-400 shadow-sm border border-zinc-700'
+                : 'text-zinc-400 hover:text-white'
+            }`}
+          >
+            <Music className="w-3.5 h-3.5 text-emerald-400" /> Verified Beats (100% Playable)
           </button>
 
           <button
             onClick={() => setActiveTab('device')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
-              activeTab === 'device' ? 'bg-zinc-800 text-amber-400 shadow-sm border border-zinc-700' : 'text-zinc-400 hover:text-white'
+              activeTab === 'device'
+                ? 'bg-zinc-800 text-amber-400 shadow-sm border border-zinc-700'
+                : 'text-zinc-400 hover:text-white'
             }`}
           >
             <FolderOpen className="w-3.5 h-3.5 text-amber-400" /> Phone & PC Files
-          </button>
-
-          <button
-            onClick={() => setActiveTab('links')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition shrink-0 ${
-              activeTab === 'links' ? 'bg-zinc-800 text-sky-400 shadow-sm border border-zinc-700' : 'text-zinc-400 hover:text-white'
-            }`}
-          >
-            <Globe className="w-3.5 h-3.5 text-sky-400" /> YouTube & Spotify
           </button>
 
           <button
