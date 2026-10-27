@@ -84,8 +84,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   }, [currentTrack]);
 
   const isPlayingRef = useRef<boolean>(isPlaying);
+  const isExplicitlyPausedRef = useRef<boolean>(!isPlaying);
   useEffect(() => {
     isPlayingRef.current = isPlaying;
+    isExplicitlyPausedRef.current = !isPlaying;
   }, [isPlaying]);
 
   const isHostRef = useRef<boolean>(isHost);
@@ -119,6 +121,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const safePlayAudio = useCallback(() => {
     const audio = audioRef.current;
     if (!audio || !audio.src) return;
+    if (isExplicitlyPausedRef.current) return;
     if (isPlayPendingRef.current) return;
     if (!audio.paused) return;
 
@@ -132,7 +135,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             isPlayPendingRef.current = false;
             playPromiseRef.current = null;
             // If room was paused while play() was in-flight, immediately pause safely
-            if (!isPlayingRef.current && audioRef.current && !audioRef.current.paused) {
+            if ((!isPlayingRef.current || isExplicitlyPausedRef.current) && audioRef.current && !audioRef.current.paused) {
               audioRef.current.pause();
             } else {
               setNeedsUserGesture(false);
@@ -150,9 +153,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             ) {
               return;
             }
-            if (!isHost) {
-              setNeedsUserGesture(true);
-            }
+            setNeedsUserGesture(true);
           });
       } else {
         isPlayPendingRef.current = false;
@@ -167,11 +168,9 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       ) {
         return;
       }
-      if (!isHost) {
-        setNeedsUserGesture(true);
-      }
+      setNeedsUserGesture(true);
     }
-  }, [isHost]);
+  }, []);
 
   const safePauseAudio = useCallback(() => {
     const audio = audioRef.current;
@@ -251,19 +250,29 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   const handleTogglePlayPause = useCallback(() => {
     if (!isHost) return;
     if (isPlaying) {
-      // 1. Immediately and forcibly pause local media outputs on user tap
+      // 1. Immediately and forcibly mark paused and halt all media outputs
+      isExplicitlyPausedRef.current = true;
+      isPlayingRef.current = false;
+      setSyncStatus('paused');
+
       if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
         try {
           if (typeof ytPlayerRef.current.pauseVideo === 'function') ytPlayerRef.current.pauseVideo();
         } catch (e) {}
       }
       if (currentTrack.source === 'audio' && audioRef.current) {
+        try {
+          audioRef.current.pause();
+        } catch (e) {}
         safePauseAudio();
       }
-      setSyncStatus('paused');
       onPause(currentTimeSec);
     } else {
       // 1. Immediately and forcibly resume local media outputs on user tap
+      isExplicitlyPausedRef.current = false;
+      isPlayingRef.current = true;
+      setSyncStatus('locked');
+
       if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
         try {
           if (typeof ytPlayerRef.current.unMute === 'function') ytPlayerRef.current.unMute();
@@ -273,7 +282,6 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
       if (currentTrack.source === 'audio' && audioRef.current) {
         safePlayAudio();
       }
-      setSyncStatus('locked');
       onPlay(currentTimeSec);
     }
   }, [
@@ -476,7 +484,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     
     // Only set src if track actually changed, NEVER reload while playing!
     if (audio.src !== currentTrack.urlOrVideoId && !audio.src.endsWith(currentTrack.urlOrVideoId)) {
+      audio.crossOrigin = 'anonymous';
       audio.src = currentTrack.urlOrVideoId;
+      try {
+        audio.load();
+      } catch (e) {}
       audio.volume = isMuted ? 0 : volume;
       audio.preservesPitch = true;
 
@@ -490,13 +502,17 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             audio.currentTime = Math.max(0, targetPos);
           } catch (e) {}
         }
-        if (isPlayingRef.current) {
+        if (isPlayingRef.current && !isExplicitlyPausedRef.current) {
           safePlayAudio();
         }
       };
 
-      audio.addEventListener('loadedmetadata', handleAudioReady, { once: true });
-      audio.addEventListener('canplay', handleAudioReady, { once: true });
+      if (audio.readyState >= 2) {
+        handleAudioReady();
+      } else {
+        audio.addEventListener('loadedmetadata', handleAudioReady, { once: true });
+        audio.addEventListener('canplay', handleAudioReady, { once: true });
+      }
     }
 
     audio.onplaying = () => {
@@ -518,7 +534,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
   // Handle HTML5 Audio Play / Pause state without touching src or buffers
   useEffect(() => {
     if (currentTrack.source !== 'audio' || !audioRef.current) return;
-    if (isPlaying) {
+    if (isPlaying && !isExplicitlyPausedRef.current) {
       safePlayAudio();
     } else {
       safePauseAudio();
@@ -553,6 +569,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
     const interval = setInterval(() => {
       const now = Date.now();
       const targetTime = getAuthoritativeTimeRef.current();
+      const effectivePlaying = isPlaying && !isExplicitlyPausedRef.current;
 
       let currentLocalTime = 0;
 
@@ -577,7 +594,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               const isAtEnd = durationSec > 5 && (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
               if (
                 !isHost &&
-                isPlaying &&
+                effectivePlaying &&
                 ytState === 2 &&
                 !isAtEnd &&
                 !needsUserGesture &&
@@ -585,7 +602,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 now - lastSeekTimeRef.current > 2000
               ) {
                 ytPlayerRef.current.playVideo();
-              } else if (!isPlaying || isAtEnd) {
+              } else if (!effectivePlaying || isAtEnd) {
                 if (ytState === 1 || ytState === 3) {
                   try {
                     ytPlayerRef.current.pauseVideo();
@@ -611,7 +628,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
           const isAtEnd = durationSec > 5 && (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
           if (
-            isPlaying &&
+            effectivePlaying &&
             !isAtEnd &&
             audioRef.current.paused &&
             !needsUserGesture &&
@@ -619,7 +636,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             !isSeekingRef.current
           ) {
             safePlayAudio();
-          } else if ((!isPlaying || isAtEnd) && !audioRef.current.paused) {
+          } else if ((!effectivePlaying || isAtEnd) && !audioRef.current.paused) {
             safePauseAudio();
           }
         }
@@ -651,10 +668,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         return;
       }
 
-      setCurrentTimeSec(isPlaying ? Math.min(targetTime, durationSec) : room.positionSec);
+      setCurrentTimeSec(effectivePlaying ? Math.min(targetTime, durationSec) : room.positionSec);
 
-      // 2. PAUSED STATE HANDLING
-      if (!isPlaying) {
+      // 2. PAUSED STATE HANDLING: Halts playback immediately on any device
+      if (!effectivePlaying) {
         setActivePlaybackRate(1.0);
         setRealtimeDriftMs(0);
         setDriftTier('paused');
@@ -670,6 +687,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             if (typeof ytPlayerRef.current.setPlaybackRate === 'function') ytPlayerRef.current.setPlaybackRate(1.0);
           } catch (e) {}
         }
+        if (isHost && now - lastHeartbeatRef.current >= 1000 && onHostHeartbeatRef.current) {
+          lastHeartbeatRef.current = now;
+          onHostHeartbeatRef.current(currentLocalTime, false);
+        }
         return;
       }
 
@@ -683,7 +704,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         // Broadcast host position smoothly every 1000ms
         if (now - lastHeartbeatRef.current >= 1000 && onHostHeartbeatRef.current) {
           lastHeartbeatRef.current = now;
-          onHostHeartbeatRef.current(currentLocalTime, isPlaying);
+          onHostHeartbeatRef.current(currentLocalTime, true);
         }
         return;
       }

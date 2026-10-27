@@ -44,14 +44,14 @@ export interface RoomState {
   users: Record<string, UserInfo>;
 }
 
-// Curated library with 100% verified, playable audio tracks (zero embedding blocks)
+// Curated library with 100% verified, playable local and direct audio tracks (zero embedding blocks)
 export const CURATED_TRACKS: Track[] = [
   {
     id: 'vf1',
     title: 'Lo-Fi Chill Beats: Rainy Night',
     artist: 'SyncTune Chillhop Studio',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/612/612610_5674468-lq.mp3',
+    urlOrVideoId: '/audio/track1_chill.mp3',
     durationSec: 154,
     thumbnail: 'https://images.unsplash.com/photo-1518609878373-06d740f60d8b?w=400&auto=format&fit=crop&q=80',
     category: 'Chill & Lo-Fi',
@@ -61,8 +61,8 @@ export const CURATED_TRACKS: Track[] = [
     title: 'Synthwave Midnight Drive',
     artist: 'Neon Horizon',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/530/530704_11861866-lq.mp3',
-    durationSec: 180,
+    urlOrVideoId: '/audio/track2_synth.mp3',
+    durationSec: 372,
     thumbnail: 'https://images.unsplash.com/photo-1509198397868-475647b2a1e5?w=400&auto=format&fit=crop&q=80',
     category: 'Electronic & Synth',
   },
@@ -71,8 +71,8 @@ export const CURATED_TRACKS: Track[] = [
     title: 'Romantic Acoustic Sunset',
     artist: 'Velvet Strings & Guitar',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/518/518305_11565147-lq.mp3',
-    durationSec: 165,
+    urlOrVideoId: '/audio/track3_acoustic.mp3',
+    durationSec: 341,
     thumbnail: 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&auto=format&fit=crop&q=80',
     category: 'Romantic & Acoustic',
   },
@@ -81,8 +81,8 @@ export const CURATED_TRACKS: Track[] = [
     title: 'Deep Focus Coffee Study',
     artist: 'Midnight Beats Collective',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/612/612610_5674468-lq.mp3',
-    durationSec: 154,
+    urlOrVideoId: '/audio/track4_focus.mp3',
+    durationSec: 302,
     thumbnail: 'https://images.unsplash.com/photo-1501386761578-eac5c94b800a?w=400&auto=format&fit=crop&q=80',
     category: 'Chill & Lo-Fi',
   },
@@ -91,8 +91,8 @@ export const CURATED_TRACKS: Track[] = [
     title: 'Cyberpunk Tokyo Nights',
     artist: 'Future Groove',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/530/530704_11861866-lq.mp3',
-    durationSec: 180,
+    urlOrVideoId: '/audio/track5_groove.mp3',
+    durationSec: 325,
     thumbnail: 'https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=400&auto=format&fit=crop&q=80',
     category: 'Electronic & Synth',
   },
@@ -101,8 +101,8 @@ export const CURATED_TRACKS: Track[] = [
     title: 'Peaceful Piano & Soft Rain',
     artist: 'Serenity Ensemble',
     source: 'audio',
-    urlOrVideoId: 'https://cdn.freesound.org/previews/518/518305_11565147-lq.mp3',
-    durationSec: 165,
+    urlOrVideoId: '/audio/track6_piano.mp3',
+    durationSec: 372,
     thumbnail: 'https://images.unsplash.com/photo-1520523839898-5071282543e2?w=400&auto=format&fit=crop&q=80',
     category: 'Romantic & Acoustic',
   },
@@ -1040,6 +1040,19 @@ wss.on('connection', (ws: WebSocket) => {
 });
 
 async function startServer() {
+  // Always serve local audio streams with HTTP 206 Byte-Range and CORS support
+  const audioDir = path.resolve(__dirname, 'public/audio');
+  app.use(
+    '/audio',
+    express.static(audioDir, {
+      acceptRanges: true,
+      setHeaders: (res) => {
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+      },
+    })
+  );
+
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({

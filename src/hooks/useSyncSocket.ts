@@ -52,6 +52,7 @@ export function useSyncSocket() {
   const clockSamplesRef = useRef<{ rtt: number; offset: number; timestamp: number }[]>([]);
   const hasInitialOffsetRef = useRef<boolean>(false);
   const lastFirestoreHeartbeatRef = useRef<number>(0);
+  const lastExplicitPauseTimestampRef = useRef<number>(0);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -248,9 +249,15 @@ export function useSyncSocket() {
                 const offsetSample = Math.round(estServerTime - receiveTime);
                 clockOffsetRef.current = Math.round(clockOffsetRef.current * 0.80 + offsetSample * 0.20);
               }
+
+              // Guard against race conditions: if pause was explicitly triggered locally within 2.5s,
+              // ignore any stale inflight heartbeats with isPlaying: true
+              const wasRecentlyPaused = Date.now() - lastExplicitPauseTimestampRef.current < 2500;
+              const effectiveIsPlaying = wasRecentlyPaused ? false : Boolean(data.isPlaying);
+
               updateSyncSnapshot(
                 data.positionSec,
-                data.isPlaying,
+                effectiveIsPlaying,
                 data.playbackRate,
                 data.lastSyncTimestamp
               );
@@ -258,7 +265,7 @@ export function useSyncSocket() {
                 if (!prev) return null;
                 return {
                   ...prev,
-                  isPlaying: Boolean(data.isPlaying),
+                  isPlaying: effectiveIsPlaying,
                   positionSec: data.positionSec,
                   lastSyncTimestamp: data.lastSyncTimestamp || Date.now(),
                   playbackRate: data.playbackRate ?? prev.playbackRate,
@@ -599,6 +606,7 @@ export function useSyncSocket() {
   // Dual-channel Play
   const sendPlay = useCallback(
     (positionSec: number) => {
+      lastExplicitPauseTimestampRef.current = 0;
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
       const masterNow = getMasterEpochTime();
       updateSyncSnapshot(pos, true, 1.0, masterNow);
@@ -624,6 +632,7 @@ export function useSyncSocket() {
   // Dual-channel Pause
   const sendPause = useCallback(
     (positionSec: number) => {
+      lastExplicitPauseTimestampRef.current = Date.now();
       const pos = typeof positionSec === 'number' && !isNaN(positionSec) ? positionSec : 0;
       const masterNow = getMasterEpochTime();
       updateSyncSnapshot(pos, false, 1.0, masterNow);
