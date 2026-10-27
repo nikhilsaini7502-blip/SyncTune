@@ -22,23 +22,34 @@
 @keyframes pulseGlow {
   0%, 100% {
     transform: scale(1) translate(0px, 0px);
-    opacity: 0.35;
+    opacity: 0.25;
   }
   50% {
-    transform: scale(1.08) translate(12px, -8px);
-    opacity: 0.55;
+    transform: scale(1.06) translate(8px, -6px);
+    opacity: 0.45;
   }
 }
 
 @keyframes pulseGlowSecondary {
   0%, 100% {
-    transform: scale(1.05) translate(0px, 0px);
-    opacity: 0.25;
+    transform: scale(1.04) translate(0px, 0px);
+    opacity: 0.2;
   }
   50% {
-    transform: scale(0.95) translate(-14px, 10px);
-    opacity: 0.45;
+    transform: scale(0.96) translate(-10px, 8px);
+    opacity: 0.35;
   }
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #080d15;
+  color: #f1f5f9;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .scrollbar-none::-webkit-scrollbar {
@@ -47,4 +58,20 @@
 .scrollbar-none {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+/* Custom sleek light scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }

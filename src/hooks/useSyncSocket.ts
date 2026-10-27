@@ -830,6 +830,7 @@ export function useSyncSocket() {
 
     const code = currentRoomCodeRef.current;
     if (code && room && room.queue.length > 0) {
+      safeSend({ type: 'next_track' });
       const nextTrack = room.queue[0];
       const remainingQueue = room.queue.slice(1);
       updateSyncSnapshot(0, true, 1.0, Date.now());
@@ -838,6 +839,18 @@ export function useSyncSocket() {
         currentTrack: nextTrack,
         queue: remainingQueue,
         isPlaying: true,
+        positionSec: 0,
+        lastSyncTimestamp: Date.now(),
+        updatedAt: Date.now(),
+      }).catch(() => {});
+    } else if (code) {
+      // Queue is empty: cleanly pause playback across all connected devices
+      safeSend({ type: 'pause', positionSec: 0 });
+      updateSyncSnapshot(0, false, 1.0, Date.now());
+      setRoom((prev) => (prev ? { ...prev, isPlaying: false, positionSec: 0 } : null));
+
+      updateDoc(doc(db, 'rooms', code), {
+        isPlaying: false,
         positionSec: 0,
         lastSyncTimestamp: Date.now(),
         updatedAt: Date.now(),

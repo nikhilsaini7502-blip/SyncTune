@@ -219,16 +219,16 @@ export const CoupleModal: React.FC<CoupleModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-lg bg-zinc-900 border border-pink-500/40 rounded-3xl p-6 shadow-2xl shadow-pink-950/50 text-white space-y-5 max-h-[92vh] overflow-y-auto">
+      <div className="relative w-full max-w-lg bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-2xl text-white space-y-5 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 flex items-center justify-center text-white shadow-lg shadow-pink-500/30">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-rose-500 to-pink-500 flex items-center justify-center text-white shadow-md shadow-pink-500/25">
               <Heart className="w-5 h-5 fill-current animate-pulse" />
             </div>
             <div>
               <h3 className="text-base font-black flex items-center gap-1.5 text-white">
-                Couples Hub <Sparkles className="w-4 h-4 text-pink-400" />
+                Couples Hub <Sparkles className="w-4 h-4 text-pink-500" />
               </h3>
               <p className="text-xs text-zinc-400">
                 Listen to romantic music together in real-time
@@ -244,9 +244,9 @@ export const CoupleModal: React.FC<CoupleModalProps> = ({
         </div>
 
         {/* SECTION 1: PERMANENT COUPLE CONNECTION */}
-        <div className="p-4 bg-gradient-to-br from-pink-950/40 via-zinc-950 to-zinc-900 border border-pink-500/30 rounded-2xl space-y-3.5">
+        <div className="p-4 bg-gradient-to-br from-rose-950/40 via-pink-950/20 to-zinc-950 border border-rose-500/30 rounded-2xl space-y-3.5">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-pink-300 flex items-center gap-1.5">
+            <span className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
               <Link2 className="w-3.5 h-3.5" /> Permanent Partner Connection
             </span>
             {profile?.isLinked ? (

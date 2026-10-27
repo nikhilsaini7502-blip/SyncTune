@@ -32,7 +32,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
       width: 320,
       margin: 1.5,
       color: {
-        dark: '#0f172a',
+        dark: '#000000',
         light: '#ffffff',
       },
       errorCorrectionLevel: 'M',
@@ -66,8 +66,8 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-2xl text-white">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-2xl text-white">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -79,10 +79,10 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
 
         {/* Header */}
         <div className="text-center space-y-1 mb-5">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-medium border border-emerald-500/20">
-            <Sparkles className="w-3.5 h-3.5" /> Live Sync Room Active
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/10 text-emerald-400 text-xs font-bold border border-emerald-500/30">
+            <Sparkles className="w-3.5 h-3.5 text-emerald-400" /> Live Sync Room Active
           </div>
-          <h3 className="text-xl font-bold tracking-tight text-white">
+          <h3 className="text-xl font-black tracking-tight text-white">
             Invite Friends to Jam
           </h3>
           <p className="text-xs text-zinc-400">
@@ -91,30 +91,32 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
         </div>
 
         {/* QR Code Frame */}
-        <div className="flex flex-col items-center justify-center bg-white p-4 rounded-xl shadow-inner mx-auto mb-5 max-w-[240px]">
+        <div className="flex flex-col items-center justify-center bg-zinc-950 border border-zinc-800 p-4 rounded-2xl shadow-inner mx-auto mb-5 max-w-[240px]">
           {qrDataUrl ? (
-            <img
-              src={qrDataUrl}
-              alt="Scan to join room"
-              className="w-48 h-48 rounded-lg object-contain"
-            />
+            <div className="bg-white p-2.5 rounded-xl shadow-md">
+              <img
+                src={qrDataUrl}
+                alt="Scan to join room"
+                className="w-44 h-44 rounded-lg object-contain"
+              />
+            </div>
           ) : (
-            <div className="w-48 h-48 flex items-center justify-center text-zinc-400">
+            <div className="w-44 h-44 flex items-center justify-center text-zinc-500 text-xs">
               Generating QR...
             </div>
           )}
-          <div className="flex items-center gap-1 text-[11px] text-zinc-600 font-medium mt-1">
-            <Smartphone className="w-3.5 h-3.5" /> Scan with mobile camera
+          <div className="flex items-center gap-1 text-[11px] text-zinc-400 font-medium mt-2">
+            <Smartphone className="w-3.5 h-3.5 text-emerald-400" /> Scan with mobile camera
           </div>
         </div>
 
         {/* Room Code Display */}
-        <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3 mb-4 text-center">
+        <div className="bg-zinc-950 border border-zinc-800 rounded-2xl p-3 mb-4 text-center">
           <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold block mb-1">
             Room Code
           </span>
           <div className="flex items-center justify-center gap-2">
-            <span className="font-mono text-2xl font-black tracking-widest text-emerald-400 bg-emerald-950/30 px-4 py-1 rounded-lg border border-emerald-500/30 select-all">
+            <span className="font-mono text-2xl font-black tracking-widest text-emerald-400 bg-zinc-900 px-5 py-1.5 rounded-xl border border-zinc-800 select-all shadow-inner">
               {roomCode}
             </span>
           </div>
@@ -124,7 +126,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
         <div className="grid grid-cols-2 gap-2.5">
           <button
             onClick={handleCopy}
-            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-sm font-medium rounded-xl text-zinc-100 transition active:scale-[0.98]"
+            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-sm font-bold rounded-xl text-zinc-200 border border-zinc-700 transition active:scale-[0.98]"
           >
             {copied ? (
               <>
@@ -133,7 +135,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
               </>
             ) : (
               <>
-                <Copy className="w-4 h-4 text-zinc-300" />
+                <Copy className="w-4 h-4 text-zinc-400" />
                 <span>Copy Link</span>
               </>
             )}
@@ -141,7 +143,7 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
 
           <button
             onClick={handleShare}
-            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-sm font-semibold rounded-xl text-white shadow-lg shadow-emerald-900/40 transition active:scale-[0.98]"
+            className="flex items-center justify-center gap-2 py-2.5 px-4 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-sm font-black rounded-xl text-black shadow-lg shadow-emerald-500/20 transition active:scale-[0.98]"
           >
             <Share2 className="w-4 h-4" />
             <span>Share Room</span>
@@ -149,9 +151,9 @@ export const QRCodeModal: React.FC<QRCodeModalProps> = ({
         </div>
 
         {/* Host & Listeners metadata */}
-        <div className="mt-4 pt-3 border-t border-zinc-800/60 flex items-center justify-between text-xs text-zinc-400">
-          <span className="truncate">Host: <strong className="text-zinc-200">{hostName}</strong></span>
-          <span className="flex items-center gap-1 text-zinc-400">
+        <div className="mt-4 pt-3 border-t border-zinc-800 flex items-center justify-between text-xs text-zinc-400">
+          <span className="truncate">Host: <strong className="text-white">{hostName}</strong></span>
+          <span className="flex items-center gap-1 text-zinc-300">
             <Users className="w-3.5 h-3.5 text-emerald-400" /> {listenerCount} in room
           </span>
         </div>

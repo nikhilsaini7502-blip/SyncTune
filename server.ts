@@ -292,16 +292,6 @@ interface CoupleLiveStatus {
 }
 const coupleStatuses = new Map<string, CoupleLiveStatus>();
 
-// API endpoints
-app.get('/api/ping', (req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-  res.setHeader('Pragma', 'no-cache');
-  res.setHeader('Expires', '0');
-  res.json({
-    serverTime: Date.now(),
-  });
-});
-
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -724,31 +714,40 @@ function getSanitizedRoom(room: RoomState) {
 }
 
 export function advanceToNextTrack(room: RoomState, reason: string = 'auto') {
-  let nextTrack: Track;
-  if (room.queue.length > 0) {
-    nextTrack = room.queue.shift()!;
-  } else {
-    const currentIndex = CURATED_TRACKS.findIndex((t) => t.id === room.currentTrack.id);
-    const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % CURATED_TRACKS.length : 0;
-    nextTrack = CURATED_TRACKS[nextIndex];
-  }
-
   const now = Date.now();
-  room.currentTrack = nextTrack;
-  room.positionSec = 0;
-  room.isPlaying = true;
-  room.lastSyncTimestamp = now;
+  if (room.queue.length > 0) {
+    const nextTrack = room.queue.shift()!;
+    room.currentTrack = nextTrack;
+    room.positionSec = 0;
+    room.isPlaying = true;
+    room.lastSyncTimestamp = now;
 
-  broadcastToRoom(room.roomId, {
-    type: 'track_changed',
-    currentTrack: room.currentTrack,
-    queue: room.queue,
-    isPlaying: true,
-    positionSec: 0,
-    lastSyncTimestamp: now,
-    byUser: 'Auto DJ',
-    reason,
-  });
+    broadcastToRoom(room.roomId, {
+      type: 'track_changed',
+      currentTrack: room.currentTrack,
+      queue: room.queue,
+      isPlaying: true,
+      positionSec: 0,
+      lastSyncTimestamp: now,
+      byUser: 'Auto DJ',
+      reason,
+    });
+  } else {
+    // Queue is empty: cleanly pause playback across all connected devices
+    room.isPlaying = false;
+    room.positionSec = 0;
+    room.lastSyncTimestamp = now;
+
+    broadcastToRoom(room.roomId, {
+      type: 'playback_sync',
+      isPlaying: false,
+      positionSec: 0,
+      lastSyncTimestamp: now,
+      serverTime: now,
+      playbackRate: 1.0,
+      byUser: 'Auto DJ',
+    });
+  }
 }
 
 // Background ticker to advance songs if ended

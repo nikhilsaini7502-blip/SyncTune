@@ -6,7 +6,6 @@ import {
   Copy,
   AlertTriangle,
   ExternalLink,
-  Sparkles,
   LogOut,
   User as UserIcon,
   ShieldCheck,
@@ -44,7 +43,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   if (!isOpen) return null;
 
   const currentDomain = typeof window !== 'undefined' ? window.location.hostname : '';
-  const isVercelHost = currentDomain.includes('vercel.app') || currentDomain.includes('run.app');
 
   const handleCopyDomain = () => {
     navigator.clipboard.writeText(currentDomain);
@@ -71,11 +69,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-2xl shadow-emerald-950/40 text-white space-y-5 max-h-[92vh] overflow-y-auto">
+      <div className="relative w-full max-w-md bg-zinc-900 border border-zinc-800 rounded-3xl p-6 shadow-2xl text-white space-y-5 max-h-[92vh] overflow-y-auto">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-black shadow-lg shadow-emerald-500/20">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center justify-center shadow-inner">
               <UserIcon className="w-5 h-5" />
             </div>
             <div>
@@ -101,15 +99,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* ALREADY LOGGED IN STATE */}
         {user ? (
           <div className="space-y-4">
-            <div className="p-4 bg-zinc-950/80 border border-emerald-500/30 rounded-2xl flex items-center gap-3.5">
+            <div className="p-4 bg-zinc-950 border border-zinc-800 rounded-2xl flex items-center gap-3.5">
               {user.photoURL ? (
                 <img
                   src={user.photoURL}
                   alt={user.displayName || 'User'}
-                  className="w-12 h-12 rounded-2xl object-cover border-2 border-emerald-400/50"
+                  className="w-12 h-12 rounded-2xl object-cover border-2 border-emerald-500/40"
                 />
               ) : (
-                <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 font-bold text-lg flex items-center justify-center">
+                <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 font-bold text-lg flex items-center justify-center border border-emerald-500/30">
                   {user.displayName?.[0] || 'U'}
                 </div>
               )}
@@ -118,8 +116,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   {user.displayName || 'Music Lover'}
                 </p>
                 <p className="text-xs text-zinc-400 truncate">{user.email}</p>
-                <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                  <ShieldCheck className="w-3 h-3" /> Cloud Synced
+                <span className="inline-flex items-center gap-1 mt-1 text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/30">
+                  <ShieldCheck className="w-3 h-3 text-emerald-400" /> Cloud Synced
                 </span>
               </div>
             </div>
@@ -129,7 +127,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 await onLogout();
                 onClose();
               }}
-              className="w-full py-2.5 px-4 bg-zinc-800 hover:bg-rose-950/50 text-zinc-300 hover:text-rose-300 border border-zinc-700 hover:border-rose-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
+              className="w-full py-2.5 px-4 bg-zinc-800 hover:bg-rose-500/10 text-zinc-300 hover:text-rose-400 border border-zinc-700 hover:border-rose-500/30 font-bold text-xs rounded-xl flex items-center justify-center gap-2 transition"
             >
               <LogOut className="w-4 h-4" />
               <span>Sign Out</span>
@@ -140,39 +138,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <div className="space-y-4">
             {/* Error Banner: Unauthorized Domain on Vercel */}
             {authError?.isUnauthorizedDomain && (
-              <div className="p-4 bg-amber-950/40 border border-amber-500/50 rounded-2xl space-y-3 text-left animate-in fade-in">
+              <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-2xl space-y-3 text-left animate-in fade-in">
                 <div className="flex items-start gap-2.5">
                   <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
                   <div>
                     <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider">
                       Vercel Domain Setup Required
                     </h4>
-                    <p className="text-[11px] text-amber-200/90 mt-1 leading-relaxed">
-                      Google OAuth requires your Vercel URL to be whitelisted in Firebase Console before mobile logins can open.
+                    <p className="text-[11px] text-amber-200 mt-1 leading-relaxed">
+                      Google OAuth requires your domain to be authorized in Firebase Console before mobile logins can open.
                     </p>
                   </div>
                 </div>
 
-                <div className="p-2.5 bg-black/60 border border-amber-500/30 rounded-xl flex items-center justify-between gap-2">
+                <div className="p-2.5 bg-zinc-950 border border-amber-500/30 rounded-xl flex items-center justify-between gap-2">
                   <span className="font-mono text-xs text-amber-300 truncate font-semibold">
                     {currentDomain}
                   </span>
                   <button
                     onClick={handleCopyDomain}
-                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs rounded-lg flex items-center gap-1 transition shrink-0"
+                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs rounded-lg flex items-center gap-1 transition shrink-0"
                   >
                     {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                     <span>{copied ? 'Copied' : 'Copy'}</span>
                   </button>
                 </div>
 
-                <div className="text-[11px] text-zinc-300 space-y-1 bg-zinc-900/80 p-3 rounded-xl border border-zinc-800">
+                <div className="text-[11px] text-zinc-300 space-y-1 bg-zinc-950 p-3 rounded-xl border border-zinc-800">
                   <p className="font-bold text-white text-xs mb-1.5 flex items-center gap-1">
                     <Globe className="w-3.5 h-3.5 text-amber-400" />
                     How to fix in 1 minute:
                   </p>
                   <p>1. Open <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="text-emerald-400 underline font-semibold inline-flex items-center gap-0.5">Firebase Console <ExternalLink className="w-2.5 h-2.5" /></a></p>
-                  <p>2. Select your project & go to <strong>Authentication &gt; Settings</strong> tab.</p>
+                  <p>2. Select project & go to <strong>Authentication &gt; Settings</strong>.</p>
                   <p>3. Under <strong>Authorized domains</strong>, click <strong>Add domain</strong> and paste <code>{currentDomain}</code>.</p>
                   <p>4. Save, then tap Sign In below!</p>
                 </div>
@@ -181,12 +179,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             {/* Error Banner: Mobile Popup Blocked */}
             {authError?.isPopupBlocked && (
-              <div className="p-3.5 bg-cyan-950/40 border border-cyan-500/50 rounded-2xl text-left space-y-2 animate-in fade-in">
+              <div className="p-3.5 bg-cyan-500/10 border border-cyan-500/30 rounded-2xl text-left space-y-2 animate-in fade-in">
                 <div className="flex items-center gap-2 text-cyan-300 text-xs font-bold">
-                  <Smartphone className="w-4 h-4 shrink-0" />
+                  <Smartphone className="w-4 h-4 shrink-0 text-cyan-400" />
                   <span>Popup Blocked by Mobile Browser</span>
                 </div>
-                <p className="text-[11px] text-cyan-100/90 leading-relaxed">
+                <p className="text-[11px] text-cyan-200 leading-relaxed">
                   Your phone's browser blocked the popup. Use the <strong>Page Redirect</strong> button below to sign in directly without popups.
                 </p>
               </div>
@@ -194,7 +192,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
             {/* Generic Error */}
             {authError && !authError.isUnauthorizedDomain && !authError.isPopupBlocked && (
-              <div className="p-3 bg-rose-950/40 border border-rose-500/40 rounded-2xl text-xs text-rose-300">
+              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs text-rose-400">
                 {authError.message}
               </div>
             )}
@@ -203,7 +201,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <button
               onClick={handleGoogleClick}
               disabled={isAuthenticating}
-              className="w-full py-3.5 px-4 bg-white hover:bg-zinc-100 active:scale-[0.98] text-black font-extrabold text-sm rounded-2xl shadow-xl flex items-center justify-center gap-2.5 transition border border-zinc-200 disabled:opacity-50"
+              className="w-full py-3.5 px-4 bg-white hover:bg-zinc-100 active:scale-[0.98] text-zinc-900 font-extrabold text-sm rounded-2xl shadow-lg flex items-center justify-center gap-2.5 transition border border-zinc-200 disabled:opacity-50"
             >
               <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
                 <path
@@ -230,7 +228,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <button
               onClick={handleRedirectClick}
               disabled={isAuthenticating}
-              className="w-full py-2.5 px-4 bg-zinc-800/80 hover:bg-zinc-700/80 text-zinc-300 hover:text-white font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-zinc-700/60 transition active:scale-95"
+              className="w-full py-2.5 px-4 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 font-bold text-xs rounded-xl flex items-center justify-center gap-2 border border-zinc-700 transition active:scale-95"
             >
               <Smartphone className="w-3.5 h-3.5 text-emerald-400" />
               <span>Mobile Phone Direct Sign-In (No Popups)</span>
@@ -243,7 +241,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 onClick={() => setShowVercelGuide(!showVercelGuide)}
                 className="text-[11px] text-zinc-400 hover:text-emerald-400 font-semibold inline-flex items-center gap-1 transition"
               >
-                <Globe className="w-3 h-3 text-emerald-400" />
+                <Globe className="w-3.5 h-3.5 text-emerald-400" />
                 <span>Hosting on Vercel? Check Authorized Domains setup</span>
               </button>
 
@@ -253,13 +251,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <span className="text-white font-bold">Current Domain:</span>
                     <button
                       onClick={handleCopyDomain}
-                      className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] font-bold rounded flex items-center gap-1 transition"
+                      className="px-2 py-0.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[10px] font-bold rounded border border-zinc-700 flex items-center gap-1 transition"
                     >
                       {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
                       <span>{copied ? 'Copied' : 'Copy'}</span>
                     </button>
                   </div>
-                  <code className="block p-1.5 bg-zinc-900 rounded font-mono text-[10px] text-emerald-400 break-all">
+                  <code className="block p-1.5 bg-zinc-900 border border-zinc-800 rounded font-mono text-[10px] text-emerald-400 break-all">
                     {currentDomain}
                   </code>
                   <p className="text-[10px] text-zinc-500 leading-tight">

@@ -156,7 +156,10 @@ export default function App() {
   const isHost = currentUser.role === 'host' || room.hostId === currentUser.id;
 
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col selection:bg-emerald-500 selection:text-black font-sans">
+    <div className="min-h-screen bg-[#070c14] text-slate-100 flex flex-col font-sans relative overflow-x-hidden">
+      {/* Top ambient glow */}
+      <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-96 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-[#132437]/50 via-[#0c1622]/20 to-transparent pointer-events-none" />
+
       {/* Top Header */}
       <PartyHeader
         room={room}
@@ -170,31 +173,31 @@ export default function App() {
       />
 
       {/* Main Party Room Content */}
-      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 space-y-6">
+      <main className="flex-1 max-w-6xl w-full mx-auto p-4 sm:p-6 space-y-6 z-10">
         {/* Quick Invite Banner for Host */}
         {isHost && (
-          <div className="bg-gradient-to-r from-emerald-950/60 via-zinc-900/80 to-zinc-900 border border-emerald-500/30 rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-lg backdrop-blur-md">
+          <div className="bg-[#0f1b28]/90 border border-[#223950] rounded-2xl p-4 flex flex-col sm:flex-row items-center justify-between gap-4 shadow-xl backdrop-blur-md">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30 shrink-0">
+              <div className="w-10 h-10 rounded-xl bg-[#14263b] text-sky-400 flex items-center justify-center border border-[#254264] shrink-0 shadow-sm">
                 <QrCode className="w-5 h-5" />
               </div>
               <div>
                 <h3 className="text-sm font-bold text-white flex items-center gap-1.5">
-                  Invite Friends with QR Code <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                  Invite Friends with QR Code <Sparkles className="w-3.5 h-3.5 text-sky-400" />
                 </h3>
-                <p className="text-xs text-zinc-400">
-                  Friends can scan this QR code on their mobile to listen together in live sync!
+                <p className="text-xs text-slate-400">
+                  Friends can scan this QR code on their phone to listen together in zero-lag live sync!
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2 w-full sm:w-auto">
-              <div className="px-3 py-1.5 bg-zinc-950 border border-zinc-800 rounded-xl font-mono text-emerald-400 text-sm font-bold tracking-wider">
+              <div className="px-3 py-1.5 bg-[#0a121d] border border-[#1f354e] rounded-xl font-mono text-sky-400 text-sm font-black tracking-wider shadow-inner">
                 {room.roomCode}
               </div>
               <button
                 onClick={() => setIsQRModalOpen(true)}
-                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl shadow-md transition active:scale-95"
+                className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-4 py-2 bg-gradient-to-r from-[#d6e3ee] to-[#b3c7d9] hover:from-white hover:to-[#c6d7e6] text-[#0a141f] text-xs font-black rounded-xl shadow-lg transition active:scale-95 cursor-pointer"
               >
                 <Share2 className="w-3.5 h-3.5" />
                 <span>Show QR Code</span>

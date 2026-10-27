@@ -326,6 +326,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           rel: 0,
           modestbranding: 1,
           playsinline: 1,
+          iv_load_policy: 3,
+          loop: 0,
           origin: window.location.origin,
           start: Math.max(0, Math.floor(initialPos)),
         },
@@ -379,10 +381,15 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             } else if (event.data === 2) {
               setSyncStatus('paused');
             } else if (event.data === 0) {
+              // Track finished: immediately stop & pause YouTube player so it NEVER autoplays random recommended videos
               setSyncStatus('paused');
+              try {
+                if (typeof event.target.pauseVideo === 'function') event.target.pauseVideo();
+                if (typeof event.target.stopVideo === 'function') event.target.stopVideo();
+              } catch (e) {}
               if (hasEndedRef.current !== currentTrack.id) {
                 hasEndedRef.current = currentTrack.id;
-                if (onTrackEnded) {
+                if (isHost && onTrackEnded) {
                   onTrackEnded();
                 }
               }
@@ -522,16 +529,21 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
               // Sync play/pause state safely without triggering infinite restart loops
               const ytState = ytPlayerRef.current.getPlayerState();
+              const isAtEnd = durationSec > 5 && (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
               if (
                 isPlaying &&
                 ytState === 2 &&
+                !isAtEnd &&
                 !needsUserGesture &&
                 !isSeekingRef.current &&
                 now - lastSeekTimeRef.current > 2000
               ) {
                 ytPlayerRef.current.playVideo();
-              } else if (!isPlaying && ytState === 1) {
-                ytPlayerRef.current.pauseVideo();
+              } else if ((!isPlaying || isAtEnd) && (ytState === 1 || ytState === 3)) {
+                try {
+                  ytPlayerRef.current.pauseVideo();
+                  ytPlayerRef.current.stopVideo();
+                } catch (e) {}
               }
             }
           } catch (e) {
@@ -550,32 +562,46 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
             setDurationSec(audioRef.current.duration);
           }
 
+          const isAtEnd = durationSec > 5 && (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
           if (
             isPlaying &&
+            !isAtEnd &&
             audioRef.current.paused &&
             !needsUserGesture &&
             !isPlayPendingRef.current &&
             !isSeekingRef.current
           ) {
             safePlayAudio();
-          } else if (!isPlaying && !audioRef.current.paused) {
+          } else if ((!isPlaying || isAtEnd) && !audioRef.current.paused) {
             safePauseAudio();
           }
         }
       }
 
       // Check if song reached the end
-      if (
-        isPlaying &&
-        durationSec > 10 &&
-        (currentLocalTime >= durationSec - 1 || targetTime >= durationSec)
-      ) {
+      const songFinished =
+        durationSec > 5 &&
+        (currentLocalTime >= durationSec - 0.5 || targetTime >= durationSec);
+
+      if (songFinished) {
+        // Strictly silence both media outputs immediately
+        if (currentTrack.source === 'youtube' && ytPlayerRef.current) {
+          try {
+            ytPlayerRef.current.pauseVideo();
+            ytPlayerRef.current.stopVideo();
+          } catch (e) {}
+        }
+        if (currentTrack.source === 'audio' && audioRef.current) {
+          safePauseAudio();
+        }
+
         if (hasEndedRef.current !== currentTrack.id) {
           hasEndedRef.current = currentTrack.id;
-          if (onTrackEnded) {
+          if (isHost && onTrackEnded) {
             onTrackEnded();
           }
         }
+        return;
       }
 
       setCurrentTimeSec(isPlaying ? Math.min(targetTime, durationSec) : room.positionSec);
@@ -590,9 +616,11 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
           audioRef.current.playbackRate = 1.0;
           safePauseAudio();
         }
-        if (ytPlayerRef.current && typeof ytPlayerRef.current.setPlaybackRate === 'function') {
+        if (ytPlayerRef.current) {
           try {
-            ytPlayerRef.current.setPlaybackRate(1.0);
+            if (typeof ytPlayerRef.current.pauseVideo === 'function') ytPlayerRef.current.pauseVideo();
+            if (typeof ytPlayerRef.current.stopVideo === 'function') ytPlayerRef.current.stopVideo();
+            if (typeof ytPlayerRef.current.setPlaybackRate === 'function') ytPlayerRef.current.setPlaybackRate(1.0);
           } catch (e) {}
         }
         return;
@@ -932,16 +960,15 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
       {/* Main Player Card */}
       <div
-        className="relative w-full rounded-3xl bg-zinc-950/85 backdrop-blur-xl border shadow-2xl overflow-hidden transition-all duration-700"
+        className="relative w-full rounded-3xl bg-zinc-950/90 backdrop-blur-xl border border-zinc-800/80 shadow-2xl overflow-hidden transition-all duration-700"
         style={{
-          borderColor: colors.borderRgba,
           boxShadow: `0 20px 50px -15px ${colors.glowRgba}`,
         }}
       >
         {/* Mobile Autoplay Unlock Banner */}
         {needsUserGesture && (
           <div
-            className="text-white p-3.5 px-5 flex items-center justify-between shadow-lg animate-pulse z-20 transition-all duration-500"
+            className="text-white p-3.5 px-5 flex items-center justify-between shadow-md animate-pulse z-20 transition-all duration-500"
             style={{
               background: `linear-gradient(135deg, ${colors.primary}, ${colors.secondary})`,
             }}
@@ -986,7 +1013,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               className="absolute -top-24 -left-24 w-80 h-80 rounded-full blur-3xl pointer-events-none transition-all duration-1000"
               style={{
                 backgroundImage: `radial-gradient(circle, ${colors.primary}, transparent)`,
-                opacity: isPlaying ? 0.35 : 0.15,
+                opacity: isPlaying ? 0.25 : 0.1,
               }}
             />
 
@@ -1013,14 +1040,14 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-black/20" />
 
                 {/* Floating Vinyl Pin */}
-                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-semibold text-zinc-300 border border-white/10 uppercase tracking-wider flex items-center gap-1">
+                <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[10px] font-semibold text-white border border-white/20 uppercase tracking-wider flex items-center gap-1">
                   {currentTrack.source === 'youtube' ? 'YouTube' : 'Audio Stream'}
                 </div>
               </div>
 
               {/* Rotating Vinyl Accent behind cover when playing */}
               <div
-                className={`absolute -right-3 top-3 w-32 h-32 sm:w-40 sm:h-40 rounded-full border-4 border-zinc-950 bg-zinc-900 -z-10 shadow-lg transition-transform duration-700 ${
+                className={`absolute -right-3 top-3 w-32 h-32 sm:w-40 sm:h-40 rounded-full border-4 border-zinc-800 bg-zinc-950 -z-10 shadow-2xl transition-transform duration-700 ${
                   isPlaying ? 'translate-x-4 animate-[spin_8s_linear_infinite]' : 'translate-x-0'
                 }`}
                 style={{
@@ -1029,12 +1056,12 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 }}
               >
                 <div
-                  className="absolute inset-0 m-auto w-10 h-10 rounded-full border-2 border-zinc-900 flex items-center justify-center transition-colors duration-1000"
+                  className="absolute inset-0 m-auto w-10 h-10 rounded-full border-2 border-zinc-700 flex items-center justify-center transition-colors duration-1000"
                   style={{
                     backgroundColor: colors.primary,
                   }}
                 >
-                  <Music className="w-4 h-4 text-black" />
+                  <Music className="w-4 h-4 text-white" />
                 </div>
               </div>
             </div>
@@ -1059,10 +1086,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                   onClick={() => setShowDiagnostics((prev) => !prev)}
                   className={`text-xs px-3 py-1 rounded-xl font-bold flex items-center gap-1.5 transition active:scale-95 border ${
                     isHost
-                      ? 'text-emerald-400 bg-emerald-950/40 border-emerald-500/40'
+                      ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
                       : driftTier === 'locked' || driftTier === 'micro_catchup' || driftTier === 'micro_brake'
-                      ? 'text-emerald-300 bg-emerald-950/40 border-emerald-500/40 hover:bg-emerald-900/40'
-                      : 'text-amber-300 bg-amber-950/40 border-amber-500/40 hover:bg-amber-900/40'
+                      ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30 hover:bg-emerald-500/20'
+                      : 'text-amber-400 bg-amber-500/10 border-amber-500/30 hover:bg-amber-500/20'
                   }`}
                   title="Click to view live Real-Time Drift & Latency Diagnostics"
                 >
@@ -1082,7 +1109,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                       ? `Live Synced (${Math.abs(realtimeDriftMs)}ms)`
                       : 'Aligning Stream...'}
                   </span>
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 border border-white/10 opacity-80 tabular-nums">
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 border border-zinc-800 opacity-90 tabular-nums text-zinc-300">
                     {latencyMs}ms
                   </span>
                   {showDiagnostics ? (
@@ -1098,7 +1125,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                     onClick={handleResync}
                     disabled={isCalibrating}
                     title="Calibrate latency and align to master clock"
-                    className="text-xs px-2.5 py-1 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center gap-1 border border-zinc-700 transition active:scale-95 disabled:opacity-50"
+                    className="text-xs px-2.5 py-1 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-300 hover:text-white flex items-center gap-1 border border-zinc-800 transition active:scale-95 disabled:opacity-50"
                   >
                     <RefreshCw
                       className={`w-3.5 h-3.5 ${isCalibrating ? 'animate-spin text-emerald-400' : ''}`}
@@ -1110,8 +1137,8 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
 
               {/* Calibration Notice Banner */}
               {calibrationNotice && (
-                <div className="p-1.5 px-3 bg-emerald-500/20 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-1.5 animate-in fade-in">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
+                <div className="p-1.5 px-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-300 text-xs font-bold flex items-center gap-1.5 animate-in fade-in">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                   <span>{calibrationNotice}</span>
                 </div>
               )}
@@ -1279,10 +1306,10 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
         )}
 
         {/* Player Controls Bar */}
-        <div className="p-4 sm:p-5 bg-zinc-950/90 border-t border-zinc-800/80 flex flex-col gap-3">
+        <div className="p-4 sm:p-5 bg-zinc-950/95 border-t border-zinc-800/80 flex flex-col gap-3">
           {/* Timeline Slider */}
           <div className="space-y-1">
-            <div className="flex items-center justify-between text-xs text-zinc-400 font-mono">
+            <div className="flex items-center justify-between text-xs text-zinc-400 font-mono font-medium">
               <span>{formatTime(currentTimeSec)}</span>
               <span>{formatTime(durationSec)}</span>
             </div>
@@ -1309,7 +1336,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
               {currentTrack.source === 'youtube' && (
                 <button
                   onClick={() => setViewMode(viewMode === 'visualizer' ? 'video' : 'visualizer')}
-                  className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60 transition"
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg bg-zinc-900 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 shadow-sm transition"
                 >
                   {viewMode === 'visualizer' ? '📺 Video' : '🎨 Art'}
                 </button>
@@ -1319,9 +1346,9 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 <button
                   onClick={onOpenAmbience}
                   title="Atmospheric Lights & Tunes"
-                  className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-zinc-800 hover:bg-zinc-700 text-teal-300 border border-teal-500/30 flex items-center gap-1.5 transition active:scale-95 shadow-sm"
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg bg-teal-500/10 hover:bg-teal-500/20 text-teal-300 border border-teal-500/30 flex items-center gap-1.5 transition active:scale-95 shadow-sm"
                 >
-                  <Sparkles className="w-3.5 h-3.5" /> Ambience
+                  <Sparkles className="w-3.5 h-3.5 text-teal-400" /> Ambience
                 </button>
               )}
 
@@ -1329,16 +1356,16 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 <button
                   onClick={onOpenCouple}
                   title="Couples Mode & WhatsApp Notification"
-                  className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-pink-950/60 hover:bg-pink-900/60 text-pink-300 border border-pink-500/40 flex items-center gap-1.5 transition active:scale-95 shadow-sm"
+                  className="px-2.5 py-1 text-xs font-bold rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 flex items-center gap-1.5 transition active:scale-95 shadow-sm"
                 >
-                  <Heart className="w-3.5 h-3.5 fill-current text-pink-400" /> Couple
+                  <Heart className="w-3.5 h-3.5 fill-current text-rose-400" /> Couple
                 </button>
               )}
 
               <div className="text-xs text-zinc-400 hidden sm:inline-block">
                 {isHost ? (
                   <span
-                    className="font-medium transition-colors duration-700"
+                    className="font-bold transition-colors duration-700"
                     style={{ color: colors.primary }}
                   >
                     🎧 Host DJ
@@ -1361,7 +1388,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                         onPlay(currentTimeSec);
                       }
                     }}
-                    className="w-12 h-12 rounded-full text-black flex items-center justify-center font-bold shadow-lg transition-all duration-300 active:scale-95"
+                    className="w-12 h-12 rounded-full text-white flex items-center justify-center font-bold shadow-lg transition-all duration-300 active:scale-95"
                     style={{
                       backgroundColor: colors.primary,
                       boxShadow: `0 10px 25px -5px ${colors.glowRgba}`,
@@ -1389,7 +1416,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                         ? `Next: ${room.queue[0].title}`
                         : 'Skip to Next Song'
                     }
-                    className="w-10 h-10 rounded-full bg-zinc-800/90 hover:bg-zinc-700 text-zinc-300 hover:text-white flex items-center justify-center transition active:scale-95 border border-zinc-700/60 shadow-sm"
+                    className="w-10 h-10 rounded-full bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white flex items-center justify-center transition active:scale-95 border border-zinc-800 shadow-sm"
                     aria-label="Skip to Next Song"
                   >
                     <SkipForward className="w-4 h-4 fill-current" />
@@ -1397,7 +1424,7 @@ export const SyncPlayer: React.FC<SyncPlayerProps> = ({
                 </>
               ) : (
                 <div className="flex items-center gap-2">
-                  <div className="px-3 py-1.5 rounded-full bg-zinc-800 text-xs text-zinc-300 border border-zinc-700 flex items-center gap-2">
+                  <div className="px-3 py-1.5 rounded-full bg-zinc-900 text-xs font-semibold text-zinc-300 border border-zinc-800 flex items-center gap-2">
                     <span
                       className="w-2 h-2 rounded-full animate-pulse"
                       style={{ backgroundColor: colors.primary }}
